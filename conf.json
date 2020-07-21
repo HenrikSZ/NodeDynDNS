@@ -1,0 +1,15 @@
+{
+	"auth":
+	{
+		"username": "home",
+		"password": "pass"
+	},
+
+	"https":
+	{
+		"key_path": "./key.pem",
+		"cert_path": "./cert.pem",
+		"key_passphrase": "1234"
+	}
+}
+

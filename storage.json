@@ -1,1 +1,10 @@
-{"ipv4":"13.2.2.2","ipv6":"fe80::215:5dff:fe03:22e2"}
+{
+	"records":
+	[
+		{
+			"domain": "home.dyn.zi-data.com.",
+			"a": "192.168.178.1",
+			"aaaa": "fe80::215:5dff:fe77:7dd"
+		}
+	]
+}

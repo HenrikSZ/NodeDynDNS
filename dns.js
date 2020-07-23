@@ -1,9 +1,10 @@
+"use strict";
+
 const https = require('https')
 const auth = require('basic-auth')
 const fs = require('fs')
 const url = require('url')
 const isIp = require('is-ip')
-
 const dgram = require('dgram')
 
 const config = require('./conf.json')
@@ -16,6 +17,7 @@ const httpsOptions = {
 	cert: fs.readFileSync(config.https.cert_path)
 }
 
+
 function sendErrorResponse(res)
 {
 	res.statusCode = 401
@@ -26,7 +28,7 @@ function sendErrorResponse(res)
 function getIP(req)
 {
 	let queryObject = url.parse(req.url, true).query
-	let ipString = ""
+	let ipString = ''
 
 	if (queryObject.ip)
 		ipString = queryObject.ip
@@ -36,14 +38,18 @@ function getIP(req)
 	return ipString
 }
 
-function handleIP(req)
+function handleIP(req, domain)
 {
 	let ip = getIP(req)
 
+	let elem = data.records.find((element) => (element.domain == domain))
+	if (!elem)
+		data.records.push({ domain: domain })
+
 	if (isIp.v4(ip))
-		data.ipv4 = ip
+		elem.a = ip
 	else if (isIp.v6(ip))
-		data.ipv6 = ip
+		elem.aaaa = ip
 	else
 		return new Error('Invalid IP format')
 
@@ -52,18 +58,27 @@ function handleIP(req)
 	return ip;
 }
 
-let server = https.createServer(httpsOptions, (req, res) => {
-	if (isValidRequest(req))
+function isValidRequest(req)
+{
+	let credentials = auth(req)
+	let elem = config.domains.find((e) => (e.domain == credentials.name && e.password == credentials.pass))
+
+	return elem ? elem.domain : false
+}
+
+function handleUpdateRequest(req, res)
+{
+	let domain = isValidRequest(req)
+
+	if (domain)
 	{
-		const result = handleIP(req)
+		const result = handleIP(req, domain)
 
 		if (result instanceof Error)
 		{
 			res.writeHead(400)
 			res.end(result.message)
 		}
-
-		console.log(data)
 
 		res.writeHead(200)
 		res.end('IP will be set to ' + result)
@@ -72,29 +87,7 @@ let server = https.createServer(httpsOptions, (req, res) => {
 	{
 		sendErrorResponse(res)
 	}
-})
-
-function validate(username, password)
-{
-	return config.auth.username == username && config.auth.password == password;
 }
-
-function isValidRequest(req)
-{
-	let credentials = auth(req)
-
-	return credentials && validate(credentials.name, credentials.pass)
-}
-
-server.listen(8000)
-
-const udpSocket = dgram.createSocket('udp4')
-
-udpSocket.on('message', (msg, rinfo) => {
-	handleDnsRequest(msg, rinfo)
-})
-
-udpSocket.bind(2000)
 
 
 // Possible values for the RCODE field (response code) in the
@@ -156,11 +149,10 @@ class OctetGroup
 	{
 		let octetGroups = string.split('.')
 
-		for (let group of octetGroups)
-		{
+		octetGroups.forEach((group) => {
 			offset.value = buffer.writeInt8(group.length, offset.value)
 			offset.value += buffer.write(group, offset.value)
-		}
+		})
 	}
 }
 
@@ -178,6 +170,11 @@ class DnsQuestion
 		offset.value += 2
 		
 		return question
+	}
+
+	static empty()
+	{
+		return new DnsQuestion()
 	}
 
 	size()
@@ -208,37 +205,109 @@ class DnsResourceRecord
 		let size = 0
 		if (this.rName)
 			size += this.rName.length
-		if (this.rData)
-			size += this.rData.length
+		switch (this.rType)
+		{
+			case TYPE_A:
+				size += 4
+				break
+			case TYPE_AAAA:
+				size += 16
+				break
+		}
 		size += 10 // TYPE, CLASS, TTL, RDLENGTH
 		size++ // Leading Length octet of NAME
 
 		return size
 	}
 
+	writeData(buffer, offset)
+	{
+		switch (this.rType)
+		{
+			case TYPE_A:
+				offset.value = buffer.writeUInt16BE(4, offset.value)
+				
+				let octets = this.rData.split('.')
+				octets.forEach((e) => {
+					offset.value = buffer.writeUInt8(parseInt(e, 10), offset.value)
+				})
+				break
+		
+			case TYPE_AAAA:
+				offset.value = buffer.writeUInt16BE(16, offset.value)
+
+				let chunks = this.rData.split(':')
+				for (let c of chunks)
+				{
+					if (c ==  '')
+						for (let i = 0; i < 8 + 1 - chunks.length; i++)
+							offset.value = buffer.writeUInt16BE(0, offset.value)
+					else
+						offset.value = buffer.writeUInt16BE(parseInt(c, 16), offset.value)
+				}
+				break
+		}
+	}
+
 	write(buffer, offset)
 	{
 		OctetGroup.write(buffer, offset, this.rName)
-		offset.value = buffer.writeInt16BE(this.rType, offset.value)
-		offset.value = buffer.writeInt16BE(this.rClass, offset.value)
-		offset.value = buffer.writeInt32BE(this.ttl, offset.value)
-		offset.value = buffer.writeInt16BE(this.rData.length, offset.value)
-		offset.value += buffer.write(this.rData, offset.value)
+		offset.value = buffer.writeUInt16BE(this.rType, offset.value)
+		offset.value = buffer.writeUInt16BE(this.rClass, offset.value)
+		offset.value = buffer.writeUInt32BE(this.ttl, offset.value)
+		this.writeData(buffer, offset)
 	}
 
 	static empty()
 	{
 		let record = new DnsResourceRecord()
 
-		record.rName = ""
+		record.rName = ''
 		record.rType = 0
 		record.rClass = 1
 		record.ttl = 900
-		record.rData = ""
+		record.rData = ''
 
 		return record
 	}
 
+	readData(buffer, offset)
+	{
+		let rDataLength = buffer.readUInt16BE(offset.value)
+		offset.value += 2
+
+		switch (this.rType)
+		{
+			case TYPE_A:
+				this.rData = ''
+				for (let i = 0; i < 4; i++)
+				{
+					let block = buffer.readUInt8(offset.value)
+					this.rData += block.toString()
+
+					if (i < 3) this.rData += '.'
+					
+					offset.value++
+				}
+				break
+			case TYPE_AAAA:
+				this.rData = ''
+
+				for (let i = 0; i < 8; i++)
+				{
+					let block = buffer.readUInt16BE(offset.value)
+					this.rData += block.toString(16)	
+
+					if (i < 7) this.rData += ':'
+
+					offset.value += 2
+				}
+				break
+		}
+
+		offset.value += rDataLength	
+	}
+	
 	static read(buffer, offset)
 	{
 		let record = new DnsResourceRecord()
@@ -252,13 +321,7 @@ class DnsResourceRecord
 		record.ttl = buffer.readInt32BE(offset.value)
 		offset.value += 4
 
-		let rDataLength = buffer.readInt16BE(offset.value)
-		offset.value += 2
-		record.rData = buffer.subarray(offset.value, offset.value + rDataLength).toString()
-		offset.value += rDataLength
-
-		console.log(record.rData)
-		console.log(rDataLength)
+		record.readData(buffer, offset)
 
 		return record
 	}
@@ -296,22 +359,12 @@ class DnsPacket
 	{
 		let size = 0
 
-		for (let q of this.questions)
-		{
-			size += q.size()
-		}
-
-		for (let r of this.records)
-		{
-			size += r.size()
-		}
+		this.questions.forEach((q) => size += q.size())
+		this.records.forEach((r) => size += r.size())
 
 		size += 12
 
 		let buffer = Buffer.alloc(size)
-		
-		console.log(size)
-
 		let offset = new Offset();
 
 		offset.value = buffer.writeUInt16BE(this.id, offset.value)
@@ -321,15 +374,8 @@ class DnsPacket
 		offset.value = buffer.writeUInt16BE(0, offset.value)
 		offset.value = buffer.writeUInt16BE(0, offset.value)
 
-		for (let q of this.questions)
-		{
-			q.write(buffer, offset)
-		}
-
-		for (let r of this.records)
-		{
-			r.write(buffer, offset)
-		}
+		this.questions.forEach((q) => q.write(buffer, offset))
+		this.records.forEach((r) => r.write(buffer, offset))
 
 		return buffer
 	}
@@ -343,10 +389,11 @@ class DnsPacket
 
 		packet.id = buffer.readInt16BE(0)
 		packet.readFlags(buffer.readInt16BE(2))
-		packet.questionCount = buffer.readInt16BE(4)
-		packet.rrAnswersCount = buffer.readInt16BE(6)
-		packet.nameServerAnswersCount = buffer.readInt16BE(8)
-		packet.additionalAnswersCount = buffer.readInt16BE(10)
+
+		let questionCount = buffer.readInt16BE(4)
+		let rrAnswersCount = buffer.readInt16BE(6)
+		let nameServerAnswersCount = buffer.readInt16BE(8)
+		let additionalAnswersCount = buffer.readInt16BE(10)
 
 		packet.questions = []
 		packet.records = []
@@ -354,15 +401,11 @@ class DnsPacket
 		let offset = new Offset()
 		offset.value = 12
 
-		for (let i = 0; i < packet.questionCount; i++)
-		{
+		for (let i = 0; i < questionCount; i++)
 			packet.questions.push(DnsQuestion.read(buffer, offset))
-		}
 
-		for (let i = 0; i < packet.rrAnswersCount; i++)
-		{
+		for (let i = 0; i < rrAnswersCount; i++)
 			packet.records.push(DnsResourceRecord.read(buffer, offset))
-		}
 
 		return packet
 	}
@@ -407,37 +450,28 @@ function handleDnsRequest(msg, rinfo)
 
 	let response = request.response()
 
-	for (let q of request.questions)
-	{
-		console.log(q.qName)
-		console.log(q.qType)
-		if (q.qName == "home.dyn.zi-data.com.")
+	request.questions.forEach((q) => {
+		let recordData = data.records.find((e) => (e.domain == q.qName))
+
+		if (recordData)
 		{
-			if (q.qType == TYPE_A)
+			let record = DnsResourceRecord.empty()
+			record.rName = q.qName
+
+			if (q.qType == TYPE_A && recordData.a)
 			{
-				let record = DnsResourceRecord.empty()
-
-				record.rName = "home.dyn.zi-data.com."
 				record.rType = TYPE_A
-				record.rData = "Data test A"
-
+				record.rData = recordData.a
 				response.records.push(record)
 			}
-			else if (q.qType == TYPE_AAAA)
+			else if (q.qType == TYPE_AAAA && recordData.aaaa)
 			{
-				let record = DnsResourceRecord.empty()
-
-				record.rName = "home.dyn.zi-data.com."
 				record.rType = TYPE_AAAA
-				record.rData = "Data test AAAA"
-
+				record.rData = recordData.aaaa
 				response.records.push(record)
 			}
 		}
-	}
-
-	console.log(response.write())
-	console.log(response)
+	})
 
 	udpSocket.send(response.write(), rinfo.port, rinfo.address)
 }
@@ -447,30 +481,35 @@ function sendTestPacket()
 	let packet = DnsPacket.empty()
 
 	packet.id = 1497
-	packet.questionCount = 1
-	packet.rrAnswerCount = 0
-	packet.nameServerAnswersCount = 0
-	packet.additionalAnswersCount = 0
 
-	let question = new DnsQuestion()
-	question.qName = "home.dyn.zi-data.com."
+	let question = DnsQuestion.empty()
+	question.qName = 'home.dyn.zi-data.com.'
 	question.qType = TYPE_AAAA
 	question.qClass = 1
 
 	packet.questions.push(question)
 
-	console.log(packet)
-	console.log(packet.write())
-
 	let socket = dgram.createSocket('udp4')
 	
 	socket.on('message', (msg, rinfo) => {
 		let packet = DnsPacket.read(msg)
-		console.log(packet)
 	})
 
 	socket.send(packet.write(), 2000, 'localhost')
 }
+
+
+const udpSocket = dgram.createSocket('udp4')
+udpSocket.on('message', (msg, rinfo) => {
+	handleDnsRequest(msg, rinfo)
+})
+
+const httpServer = https.createServer(httpsOptions, (req, res) => {
+	handleUpdateRequest(req, res)
+})
+
+udpSocket.bind(2000)
+httpServer.listen(8000)
 
 sendTestPacket()
 

@@ -1,9 +1,12 @@
 {
-	"auth":
-	{
-		"username": "home",
-		"password": "pass"
-	},
+	"domains" :
+	[
+		{
+			"domain": "home.dyn.zi-data.com",
+			"password": "pass"
+		}
+	],
+
 
 	"https":
 	{

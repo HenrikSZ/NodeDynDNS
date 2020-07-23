@@ -6,6 +6,7 @@
 storage.json
 conf.json
 *.pem
+!examples/*
 
 ### Node ###
 # Logs

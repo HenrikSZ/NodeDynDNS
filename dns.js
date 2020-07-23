@@ -9,22 +9,17 @@ const dgram = require('dgram')
 
 const config = require('./conf.json')
 
-let data = require('./storage.json')
+let data
 
-const httpsOptions = {
-	key: fs.readFileSync(config.https.key_path),
-	passphrase: config.https.key_passphrase,
-	cert: fs.readFileSync(config.https.cert_path)
-}
-
-
+// Used to send responses to invalid http requests
 function sendErrorResponse(res)
 {
 	res.statusCode = 401
-	res.setHeader('WWW-Authenticate', 'Basic realm="Updating requires login"')
+	res.setHeader('WWW-Authenticate', 'Basic realm="NodeDynDNS"')
 	res.end('Invalid authentication')
 }
 
+// Returns the IP address from the request. Either from the connection or by the request parameter ip.
 function getIP(req)
 {
 	let queryObject = url.parse(req.url, true).query
@@ -38,6 +33,7 @@ function getIP(req)
 	return ipString
 }
 
+// Handles the determination of the IP address and the update of future DNS responses
 function handleIP(req, domain)
 {
 	let ip = getIP(req)
@@ -53,11 +49,12 @@ function handleIP(req, domain)
 	else
 		return new Error('Invalid IP format')
 
-	fs.writeFileSync("./storage.json", JSON.stringify(data))
+	fs.writeFileSync('./storage.json', JSON.stringify(data))
 
 	return ip;
 }
 
+// Determines if a request is valid and returns the authenticated username or false
 function isValidRequest(req)
 {
 	let credentials = auth(req)
@@ -66,6 +63,7 @@ function isValidRequest(req)
 	return elem ? elem.domain : false
 }
 
+// The entry point to the IP update system
 function handleUpdateRequest(req, res)
 {
 	let domain = isValidRequest(req)
@@ -112,6 +110,7 @@ const TYPE_AAAA  =  28  // IPv6 host address (see RFC 3596, 2.1 AAAA record type
 const TYPE_ALL   = 255  // A request for all records (only valid in question)
 
 
+// Wrapper object to make passing around buffer offsets easier
 class Offset
 {
 	contructor()
@@ -120,11 +119,12 @@ class Offset
 	}
 }
 
+// Class with static methods to read and write domains in the format specified by RFC 1035
 class OctetGroup
 {
 	static read(buffer, offset)
 	{
-		let result = ""
+		let result = ''
 		let groupLength = 0
 		
 		do
@@ -156,6 +156,7 @@ class OctetGroup
 	}
 }
 
+// Class to read and write DNS questions
 class DnsQuestion
 {
 	static read(buffer, offset)
@@ -198,6 +199,7 @@ class DnsQuestion
 	}
 }
 
+// Class to read and write DNS RRs
 class DnsResourceRecord
 {
 	size()
@@ -327,16 +329,17 @@ class DnsResourceRecord
 	}
 }
 
-class DnsPacket
+// Class to read and write whole DNS message
+class DnsMessage
 {
 	readFlags(flags)
 	{
-		this.isResponse = 		(flags & 0b1000000000000000) >> 15
+		this.isResponse = 		!!((flags & 0b1000000000000000) >> 15)
 		this.opCode = 			(flags & 0b0111100000000000) >> 11
-		this.isAuthority = 		(flags & 0b0000010000000000) >> 10
-		this.isTruncated =		(flags & 0b0000001000000000) >> 9
-		this.recursionDesired =		(flags & 0b0000000100000000) >> 8
-		this.recursionAvailable =	(flags & 0b0000000010000000) >> 7
+		this.isAuthority = 		!!((flags & 0b0000010000000000) >> 10)
+		this.isTruncated =		!!((flags & 0b0000001000000000) >> 9)
+		this.recursionDesired =		!!((flags & 0b0000000100000000) >> 8)
+		this.recursionAvailable =	!!((flags & 0b0000000010000000) >> 7)
 		this.responseCode =		(flags & 0b0000000000001111) >> 0
 	}
 
@@ -350,7 +353,7 @@ class DnsPacket
 		flags |= (this.isTruncated ? 0b1 : 0b0) << 9
 		flags |= (this.recursionDesired ? 0b1 : 0b0) << 8
 		flags |= (this.recursionAvailable ? ob1 : 0b0) << 7
-		flags |= this.responseCode
+		flags |= this.responseCode << 0
 
 		return flags
 	}
@@ -382,7 +385,7 @@ class DnsPacket
 
 	static read(buffer)
 	{
-		let packet = new DnsPacket()
+		let packet = new DnsMessage()
 
 		if (buffer.length < 12)
 			return new Error('Too short request')
@@ -412,7 +415,7 @@ class DnsPacket
 
 	static empty()
 	{
-		let packet = new DnsPacket()
+		let packet = new DnsMessage()
 
 		packet.isResponse = false
 		packet.opCode = 0
@@ -430,7 +433,7 @@ class DnsPacket
 
 	response()
 	{
-		let response = DnsPacket.empty()
+		let response = DnsMessage.empty()
 
 		response.isResponse = true
 		response.id = this.id
@@ -441,9 +444,10 @@ class DnsPacket
 	}
 }
 
+// Handles incoming DNS requests
 function handleDnsRequest(msg, rinfo)
 {
-	let request = DnsPacket.read(msg)
+	let request = DnsMessage.read(msg)
 
 	if (request instanceof Error)
 		console.log(request)
@@ -475,47 +479,70 @@ function handleDnsRequest(msg, rinfo)
 		}
 	})
 
+
+	console.log(`Request from [${rinfo.address}]:${rinfo.port}:`)
+	console.log(request)
+
+	console.log('Response:')
 	console.log(response)
-	console.log(response.write())
-	console.log("Sending back to: " + rinfo.address + ":" + rinfo.port)
 
 	udpSocket.send(response.write(), rinfo.port, rinfo.address)
 }
 
-function sendTestPacket()
+const maxToInitialize = 2
+let initialized = 0
+
+// Determines if all initialization processes are finished and eventually drops root privileges
+function dropPrivileges()
 {
-	let packet = DnsPacket.empty()
+	initialized++
 
-	packet.id = 1497
+	if (initialized == maxToInitialize)
+	{
+		process.setgid(config.system.group)
+		process.setuid(config.system.user)
 
-	let question = DnsQuestion.empty()
-	question.qName = 'home.dyn.zi-data.com.'
-	question.qType = TYPE_AAAA
-	question.qClass = 1
-
-	packet.questions.push(question)
-
-	let socket = dgram.createSocket('udp4')
-	
-	socket.on('message', (msg, rinfo) => {
-		let packet = DnsPacket.read(msg)
-	})
-
-	socket.send(packet.write(), 2000, 'localhost')
+		console.log(`Dropped root privileges and switched to ${config.system.user}:${config.system.group}`)
+	}
 }
 
 
-const udpSocket = dgram.createSocket('udp4')
-udpSocket.on('message', (msg, rinfo) => {
-	handleDnsRequest(msg, rinfo)
+const httpsOptions = {
+	key: fs.readFileSync(config.https.key_path),
+	cert: fs.readFileSync(config.https.cert_path)
+}
+
+console.log(`Using key ${config.https.key_path} and certificate ${config.https.cert_path}`)
+
+
+// Setup method called after the existence of necessary files is checked
+function setup()
+{
+	const udpSocket = dgram.createSocket('udp4')
+	udpSocket.on('message', (msg, rinfo) => {
+		handleDnsRequest(msg, rinfo)
+	})
+	
+	const httpServer = https.createServer(httpsOptions, (req, res) => {
+		handleUpdateRequest(req, res)
+	})
+	
+	udpSocket.bind(53, config.dns.address, () => {
+		console.log('Listening on port 53 for the DNS service')
+		dropPrivileges()
+	})
+	httpServer.listen(config.https.port, () => {
+		console.log(`Listening on port ${config.https.port} for ip updates via HTTPS`)
+		dropPrivileges()
+	})
+}
+
+fs.access('./storage.json', (err) => {
+	if (err)
+		data = { records: [] }
+	else
+		data = require('./storage.json')
+
+	setup()
 })
-
-const httpServer = https.createServer(httpsOptions, (req, res) => {
-	handleUpdateRequest(req, res)
-})
-
-udpSocket.bind(53, "85.214.129.219")
-httpServer.listen(445)
-
-//sendTestPacket()
 

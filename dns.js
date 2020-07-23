@@ -9,6 +9,8 @@ const dgram = require('dgram')
 
 const config = require('./conf.json')
 
+let udpSocket
+let httpsServer
 let data
 
 // Used to send responses to invalid http requests
@@ -40,8 +42,11 @@ function handleIP(req, domain)
 
 	let elem = data.records.find((element) => (element.domain == domain))
 	if (!elem)
-		data.records.push({ domain: domain })
-
+	{
+		elem = { domain: domain }
+		data.records.push(elem)
+	}
+	
 	if (isIp.v4(ip))
 		elem.a = ip
 	else if (isIp.v6(ip))
@@ -58,6 +63,9 @@ function handleIP(req, domain)
 function isValidRequest(req)
 {
 	let credentials = auth(req)
+	if (!credentials)
+		return false
+
 	let elem = config.domains.find((e) => (e.domain == credentials.name && e.password == credentials.pass))
 
 	return elem ? elem.domain : false
@@ -518,12 +526,12 @@ console.log(`Using key ${config.https.key_path} and certificate ${config.https.c
 // Setup method called after the existence of necessary files is checked
 function setup()
 {
-	const udpSocket = dgram.createSocket('udp4')
+	udpSocket = dgram.createSocket('udp4')
 	udpSocket.on('message', (msg, rinfo) => {
 		handleDnsRequest(msg, rinfo)
 	})
 	
-	const httpServer = https.createServer(httpsOptions, (req, res) => {
+	httpsServer = https.createServer(httpsOptions, (req, res) => {
 		handleUpdateRequest(req, res)
 	})
 	
@@ -531,7 +539,7 @@ function setup()
 		console.log('Listening on port 53 for the DNS service')
 		dropPrivileges()
 	})
-	httpServer.listen(config.https.port, () => {
+	httpsServer.listen(config.https.port, () => {
 		console.log(`Listening on port ${config.https.port} for ip updates via HTTPS`)
 		dropPrivileges()
 	})

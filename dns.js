@@ -164,9 +164,9 @@ class DnsQuestion
 
 		question.qName = OctetGroup.read(buffer, offset)
 
-		question.qType = buffer.readInt16BE(offset.value)
+		question.qType = buffer.readUInt16BE(offset.value)
 		offset.value += 2
-		question.qClass = buffer.readInt16BE(offset.value)
+		question.qClass = buffer.readUInt16BE(offset.value)
 		offset.value += 2
 		
 		return question
@@ -313,12 +313,12 @@ class DnsResourceRecord
 		let record = new DnsResourceRecord()
 
 		record.rName = OctetGroup.read(buffer, offset)
-		record.rType = buffer.readInt16BE(offset.value)
+		record.rType = buffer.readUInt16BE(offset.value)
 		offset.value += 2
-		record.rClass = buffer.readInt16BE(offset.value)
+		record.rClass = buffer.readUInt16BE(offset.value)
 		offset.value += 2
 		
-		record.ttl = buffer.readInt32BE(offset.value)
+		record.ttl = buffer.readUInt32BE(offset.value)
 		offset.value += 4
 
 		record.readData(buffer, offset)
@@ -387,13 +387,13 @@ class DnsPacket
 		if (buffer.length < 12)
 			return new Error('Too short request')
 
-		packet.id = buffer.readInt16BE(0)
-		packet.readFlags(buffer.readInt16BE(2))
+		packet.id = buffer.readUInt16BE(0)
+		packet.readFlags(buffer.readUInt16BE(2))
 
-		let questionCount = buffer.readInt16BE(4)
-		let rrAnswersCount = buffer.readInt16BE(6)
-		let nameServerAnswersCount = buffer.readInt16BE(8)
-		let additionalAnswersCount = buffer.readInt16BE(10)
+		let questionCount = buffer.readUInt16BE(4)
+		let rrAnswersCount = buffer.readUInt16BE(6)
+		let nameServerAnswersCount = buffer.readUInt16BE(8)
+		let additionalAnswersCount = buffer.readUInt16BE(10)
 
 		packet.questions = []
 		packet.records = []
@@ -434,6 +434,8 @@ class DnsPacket
 
 		response.isResponse = true
 		response.id = this.id
+		response.isAuthority = true
+		response.questions = this.questions
 
 		return response
 	}
@@ -473,6 +475,10 @@ function handleDnsRequest(msg, rinfo)
 		}
 	})
 
+	console.log(response)
+	console.log(response.write())
+	console.log("Sending back to: " + rinfo.address + ":" + rinfo.port)
+
 	udpSocket.send(response.write(), rinfo.port, rinfo.address)
 }
 
@@ -508,8 +514,8 @@ const httpServer = https.createServer(httpsOptions, (req, res) => {
 	handleUpdateRequest(req, res)
 })
 
-udpSocket.bind(2000)
-httpServer.listen(8000)
+udpSocket.bind(53, "85.214.129.219")
+httpServer.listen(445)
 
-sendTestPacket()
+//sendTestPacket()
 

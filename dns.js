@@ -128,11 +128,14 @@ const TYPE_ALL   = 255  // A request for all records (only valid in question)
 
 
 // Wrapper object to make passing around buffer offsets easier
-let Offset = () => { this.value = 0 }
+function Offset()
+{
+	this.value = 0
+}
 
 // Class with static methods to read and write domains in the format specified by RFC 1035
-let OctetGroup = () => {}
-OctetGroup.read = (buffer, offset) => 
+function OctetGroup() {}
+OctetGroup.read = function(buffer, offset) 
 {
 	let result = ''
 	let groupLength = 0
@@ -153,7 +156,7 @@ OctetGroup.read = (buffer, offset) =>
 	return result
 }
 
-OctetGroup.write = (buffer, offset, string) =>
+OctetGroup.write = function(buffer, offset, string)
 {
 	let octetGroups = string.split('.')
 
@@ -166,7 +169,7 @@ OctetGroup.write = (buffer, offset, string) =>
 
 // Class to read and write DNS questions
 function DnsQuestion() {}
-DnsQuestion.read = (buffer, offset) =>
+DnsQuestion.read = function(buffer, offset)
 {	
 	let question = new DnsQuestion()
 	question.qName = OctetGroup.read(buffer, offset)
@@ -178,12 +181,12 @@ DnsQuestion.read = (buffer, offset) =>
 	return question
 }
 
-DnsQuestion.empty = () =>
+DnsQuestion.empty = function()
 {
 	return new DnsQuestion()
 }
 
-DnsQuestion.prototype.size = () =>
+DnsQuestion.prototype.size = function()
 {
 	let size = 0
 	if (this.qName)
@@ -194,7 +197,7 @@ DnsQuestion.prototype.size = () =>
 		return size
 }
 
-DnsQuestion.prototype.write = (buffer, offset) =>
+DnsQuestion.prototype.write = function(buffer, offset)
 {
 	OctetGroup.write(buffer, offset, this.qName)
 
@@ -206,7 +209,7 @@ DnsQuestion.prototype.write = (buffer, offset) =>
 
 // Class to read and write DNS RRs
 function DnsResourceRecord() {}
-DnsResourceRecord.prototype.size = () =>
+DnsResourceRecord.prototype.size = function()
 {
 	let size = 0
 	if (this.rName)
@@ -226,7 +229,7 @@ DnsResourceRecord.prototype.size = () =>
 	return size
 }
 
-DnsResourceRecord.prototype.writeData = (buffer, offset) =>
+DnsResourceRecord.prototype.writeData = function(buffer, offset)
 {
 	switch (this.rType)
 	{
@@ -255,7 +258,7 @@ DnsResourceRecord.prototype.writeData = (buffer, offset) =>
 		}
 }
 
-DnsResourceRecord.prototype.write = (buffer, offset) =>
+DnsResourceRecord.prototype.write = function(buffer, offset)
 {
 	OctetGroup.write(buffer, offset, this.rName)
 	offset.value = buffer.writeUInt16BE(this.rType, offset.value)
@@ -264,20 +267,20 @@ DnsResourceRecord.prototype.write = (buffer, offset) =>
 	this.writeData(buffer, offset)
 }
 
-DnsResourceRecord.empty = () =>
+DnsResourceRecord.empty = function()
 {
 	let record = new DnsResourceRecord()
 
 	record.rName = ''
 	record.rType = 0
 	record.rClass = 1
-	record.ttl = 900
+	record.ttl = 300
 	record.rData = ''
 
 	return record
 }
 
-DnsResourceRecord.prototype.readData = (buffer, offset) =>
+DnsResourceRecord.prototype.readData = function(buffer, offset)
 {
 	let rDataLength = buffer.readUInt16BE(offset.value)
 	offset.value += 2
@@ -313,7 +316,7 @@ DnsResourceRecord.prototype.readData = (buffer, offset) =>
 	offset.value += rDataLength	
 }
 	
-DnsResourceRecord.read = (buffer, offset) =>
+DnsResourceRecord.read = function(buffer, offset)
 {
 	let record = new DnsResourceRecord()
 
@@ -333,7 +336,7 @@ DnsResourceRecord.read = (buffer, offset) =>
 
 // Class to read and write whole DNS message
 function DnsMessage() {}
-DnsMessage.prototype.readFlags = (flags) =>
+DnsMessage.prototype.readFlags = function(flags)
 {
 	this.isResponse = 		!!((flags & 0b1000000000000000) >> 15)
 	this.opCode = 			(flags & 0b0111100000000000) >> 11
@@ -344,7 +347,7 @@ DnsMessage.prototype.readFlags = (flags) =>
 	this.responseCode =		(flags & 0b0000000000001111) >> 0
 }
 
-DnsMessage.prototype.getFlags = () =>
+DnsMessage.prototype.getFlags = function()
 {
 	let flags = 0
 
@@ -358,7 +361,8 @@ DnsMessage.prototype.getFlags = () =>
 
 	return flags
 }
-DnsMessage.write = () =>
+
+DnsMessage.prototype.write = function()
 {
 	let size = 0
 
@@ -383,9 +387,9 @@ DnsMessage.write = () =>
 	return buffer
 }
 
-DnsMessage.read = (buffer) =>
+DnsMessage.read = function(buffer)
 {
-	let packet = new DnsMessage()
+	let packet = DnsMessage.empty()
 
 	if (buffer.length < 12)
 		return new Error('Too short request')
@@ -398,9 +402,6 @@ DnsMessage.read = (buffer) =>
 	let nameServerAnswersCount = buffer.readUInt16BE(8)
 	let additionalAnswersCount = buffer.readUInt16BE(10)
 
-	packet.questions = []
-	packet.records = []
-
 	let offset = new Offset()
 	offset.value = 12
 
@@ -410,10 +411,11 @@ DnsMessage.read = (buffer) =>
 	for (let i = 0; i < rrAnswersCount; i++)
 		packet.records.push(DnsResourceRecord.read(buffer, offset))
 
+
 	return packet
 }
 
-DnsMessage.empty = () =>
+DnsMessage.empty = function()
 {
 	let packet = new DnsMessage()
 
@@ -431,7 +433,7 @@ DnsMessage.empty = () =>
 	return packet
 }
 
-DnsMessage.prototype.response = () =>
+DnsMessage.prototype.response = function()
 {
 	let response = DnsMessage.empty()
 
@@ -449,18 +451,22 @@ function handleDnsRequest(msg, rinfo)
 {
 	let request = DnsMessage.read(msg)
 
-	if (request instanceof Error)
+	/*if (request instanceof Error)
 		console.log(request)
 	else
 		console.log(request)
 
+		*/
 	let response = request.response()
+	let domainAvailable = false
 
 	request.questions.forEach((q) => {
 		let recordData = data.records.find((e) => (e.domain == q.qName))
 
 		if (recordData)
 		{
+			domainAvailable = true
+
 			let record = DnsResourceRecord.empty()
 			record.rName = q.qName
 
@@ -479,14 +485,14 @@ function handleDnsRequest(msg, rinfo)
 		}
 	})
 
-	if (response.records.length === 0)
+	if (!domainAvailable)
 		response.responseCode = 3
 
 	console.log(`Request from [${rinfo.address}]:${rinfo.port}:`)
-	console.log(request)
+	console.log(request.questions)
 
 	console.log('Response:')
-	console.log(response)
+	console.log(response.records)
 
 	udpSocket.send(response.write(), rinfo.port, rinfo.address)
 }

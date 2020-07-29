@@ -13,6 +13,16 @@ let udpSocket
 let httpsServer
 let data
 
+function saveData()
+{
+	fs.writeFileSync('./storage.json', JSON.stringify(data))
+	console.log('Saved resource record data')
+}
+
+process.on('SIGINT', () => process.exit())
+process.on('SIGTERM', () => process.exit())
+process.on('exit', () => saveData())
+
 // Used to send responses to invalid http requests
 function sendErrorResponse(res)
 {
@@ -54,7 +64,6 @@ function handleIP(req, domain)
 	else
 		return new Error('Invalid IP format')
 
-	fs.writeFileSync('./storage.json', JSON.stringify(data))
 
 	return ip;
 }
@@ -119,338 +128,321 @@ const TYPE_ALL   = 255  // A request for all records (only valid in question)
 
 
 // Wrapper object to make passing around buffer offsets easier
-class Offset
-{
-	contructor()
-	{
-		this.value = 0
-	}
-}
+let Offset = () => { this.value = 0 }
 
 // Class with static methods to read and write domains in the format specified by RFC 1035
-class OctetGroup
+let OctetGroup = () => {}
+OctetGroup.read = (buffer, offset) => 
 {
-	static read(buffer, offset)
+	let result = ''
+	let groupLength = 0
+	
+	do
 	{
-		let result = ''
-		let groupLength = 0
-		
-		do
-		{
-			groupLength = buffer.readInt8(offset.value)
-			offset.value++
-
+		groupLength = buffer.readInt8(offset.value)
+		offset.value++
 			if (groupLength > 0)
-			{
-				const group = buffer.subarray(offset.value, offset.value + groupLength)
-				result += group.toString('ascii')
-				offset.value += groupLength
-				result += '.'
-			}
-		} while (groupLength > 0)
+		{
+			const group = buffer.subarray(offset.value, offset.value + groupLength)
+			result += group.toString('ascii')
+			offset.value += groupLength
+			result += '.'
+		}
+	} while (groupLength > 0)
 
-
-		return result
-	}
-
-	static write(buffer, offset, string)
-	{
-		let octetGroups = string.split('.')
-
-		octetGroups.forEach((group) => {
-			offset.value = buffer.writeInt8(group.length, offset.value)
-			offset.value += buffer.write(group, offset.value)
-		})
-	}
+	return result
 }
+
+OctetGroup.write = (buffer, offset, string) =>
+{
+	let octetGroups = string.split('.')
+
+	octetGroups.forEach((group) => {
+		offset.value = buffer.writeInt8(group.length, offset.value)
+		offset.value += buffer.write(group, offset.value)
+	})
+}
+
 
 // Class to read and write DNS questions
-class DnsQuestion
-{
-	static read(buffer, offset)
-	{	
-		let question = new DnsQuestion()
-
-		question.qName = OctetGroup.read(buffer, offset)
-
-		question.qType = buffer.readUInt16BE(offset.value)
-		offset.value += 2
-		question.qClass = buffer.readUInt16BE(offset.value)
-		offset.value += 2
+function DnsQuestion() {}
+DnsQuestion.read = (buffer, offset) =>
+{	
+	let question = new DnsQuestion()
+	question.qName = OctetGroup.read(buffer, offset)
+	question.qType = buffer.readUInt16BE(offset.value)
+	offset.value += 2
+	question.qClass = buffer.readUInt16BE(offset.value)
+	offset.value += 2
 		
-		return question
-	}
-
-	static empty()
-	{
-		return new DnsQuestion()
-	}
-
-	size()
-	{
-		let size = 0
-		if (this.qName)
-			size += this.qName.length
-		size += 4	// QType and Qclass fields
-		size++		// Leading length octet of NAME
-		
-		return size
-	}
-
-	write(buffer, offset)
-	{
-		OctetGroup.write(buffer, offset, this.qName)
-
-		offset.value = buffer.writeInt16BE(this.qType, offset.value)
-		offset.value = buffer.writeInt16BE(this.qClass, offset.value)
-
-	}
+	return question
 }
 
-// Class to read and write DNS RRs
-class DnsResourceRecord
+DnsQuestion.empty = () =>
 {
-	size()
-	{
-		let size = 0
-		if (this.rName)
-			size += this.rName.length
-		switch (this.rType)
-		{
-			case TYPE_A:
-				size += 4
-				break
-			case TYPE_AAAA:
-				size += 16
-				break
-		}
-		size += 10 // TYPE, CLASS, TTL, RDLENGTH
-		size++ // Leading Length octet of NAME
+	return new DnsQuestion()
+}
 
-		return size
-	}
-
-	writeData(buffer, offset)
-	{
-		switch (this.rType)
-		{
-			case TYPE_A:
-				offset.value = buffer.writeUInt16BE(4, offset.value)
-				
-				let octets = this.rData.split('.')
-				octets.forEach((e) => {
-					offset.value = buffer.writeUInt8(parseInt(e, 10), offset.value)
-				})
-				break
-		
-			case TYPE_AAAA:
-				offset.value = buffer.writeUInt16BE(16, offset.value)
-
-				let chunks = this.rData.split(':')
-				for (let c of chunks)
-				{
-					if (c ==  '')
-						for (let i = 0; i < 8 + 1 - chunks.length; i++)
-							offset.value = buffer.writeUInt16BE(0, offset.value)
-					else
-						offset.value = buffer.writeUInt16BE(parseInt(c, 16), offset.value)
-				}
-				break
-		}
-	}
-
-	write(buffer, offset)
-	{
-		OctetGroup.write(buffer, offset, this.rName)
-		offset.value = buffer.writeUInt16BE(this.rType, offset.value)
-		offset.value = buffer.writeUInt16BE(this.rClass, offset.value)
-		offset.value = buffer.writeUInt32BE(this.ttl, offset.value)
-		this.writeData(buffer, offset)
-	}
-
-	static empty()
-	{
-		let record = new DnsResourceRecord()
-
-		record.rName = ''
-		record.rType = 0
-		record.rClass = 1
-		record.ttl = 900
-		record.rData = ''
-
-		return record
-	}
-
-	readData(buffer, offset)
-	{
-		let rDataLength = buffer.readUInt16BE(offset.value)
-		offset.value += 2
-
-		switch (this.rType)
-		{
-			case TYPE_A:
-				this.rData = ''
-				for (let i = 0; i < 4; i++)
-				{
-					let block = buffer.readUInt8(offset.value)
-					this.rData += block.toString()
-
-					if (i < 3) this.rData += '.'
-					
-					offset.value++
-				}
-				break
-			case TYPE_AAAA:
-				this.rData = ''
-
-				for (let i = 0; i < 8; i++)
-				{
-					let block = buffer.readUInt16BE(offset.value)
-					this.rData += block.toString(16)	
-
-					if (i < 7) this.rData += ':'
-
-					offset.value += 2
-				}
-				break
-		}
-
-		offset.value += rDataLength	
-	}
+DnsQuestion.prototype.size = () =>
+{
+	let size = 0
+	if (this.qName)
+		size += this.qName.length
+		size += 4	// QType and Qclass fields
+		size++		// Leading length octet of NAME
 	
-	static read(buffer, offset)
+		return size
+}
+
+DnsQuestion.prototype.write = (buffer, offset) =>
+{
+	OctetGroup.write(buffer, offset, this.qName)
+
+	offset.value = buffer.writeInt16BE(this.qType, offset.value)
+	offset.value = buffer.writeInt16BE(this.qClass, offset.value)
+
+}
+
+
+// Class to read and write DNS RRs
+function DnsResourceRecord() {}
+DnsResourceRecord.prototype.size = () =>
+{
+	let size = 0
+	if (this.rName)
+		size += this.rName.length
+	switch (this.rType)
 	{
-		let record = new DnsResourceRecord()
-
-		record.rName = OctetGroup.read(buffer, offset)
-		record.rType = buffer.readUInt16BE(offset.value)
-		offset.value += 2
-		record.rClass = buffer.readUInt16BE(offset.value)
-		offset.value += 2
-		
-		record.ttl = buffer.readUInt32BE(offset.value)
-		offset.value += 4
-
-		record.readData(buffer, offset)
-
-		return record
+		case TYPE_A:
+			size += 4
+			break
+		case TYPE_AAAA:
+			size += 16
+			break
 	}
+	size += 10 // TYPE, CLASS, TTL, RDLENGTH
+	size++ // Leading Length octet of NAME
+
+	return size
+}
+
+DnsResourceRecord.prototype.writeData = (buffer, offset) =>
+{
+	switch (this.rType)
+	{
+		case TYPE_A:
+			offset.value = buffer.writeUInt16BE(4, offset.value)
+			
+			let octets = this.rData.split('.')
+			octets.forEach((e) => {
+				offset.value = buffer.writeUInt8(parseInt(e, 10), offset.value)
+			})
+			break
+		
+		case TYPE_AAAA:
+			offset.value = buffer.writeUInt16BE(16, offset.value)
+			
+			let chunks = this.rData.split(':')
+			for (let c of chunks)
+			{
+				if (c ==  '')
+					for (let i = 0; i < 8 + 1 - chunks.length; i++)
+						offset.value = buffer.writeUInt16BE(0, offset.value)
+				else
+					offset.value = buffer.writeUInt16BE(parseInt(c, 16), offset.value)
+			}
+			break
+		}
+}
+
+DnsResourceRecord.prototype.write = (buffer, offset) =>
+{
+	OctetGroup.write(buffer, offset, this.rName)
+	offset.value = buffer.writeUInt16BE(this.rType, offset.value)
+	offset.value = buffer.writeUInt16BE(this.rClass, offset.value)
+	offset.value = buffer.writeUInt32BE(this.ttl, offset.value)
+	this.writeData(buffer, offset)
+}
+
+DnsResourceRecord.empty = () =>
+{
+	let record = new DnsResourceRecord()
+
+	record.rName = ''
+	record.rType = 0
+	record.rClass = 1
+	record.ttl = 900
+	record.rData = ''
+
+	return record
+}
+
+DnsResourceRecord.prototype.readData = (buffer, offset) =>
+{
+	let rDataLength = buffer.readUInt16BE(offset.value)
+	offset.value += 2
+
+	switch (this.rType)
+	{
+		case TYPE_A:
+			this.rData = ''
+			for (let i = 0; i < 4; i++)
+			{
+				let block = buffer.readUInt8(offset.value)
+				this.rData += block.toString()
+
+				if (i < 3) this.rData += '.'
+				offset.value++
+			}
+			break
+		case TYPE_AAAA:
+			this.rData = ''
+
+			for (let i = 0; i < 8; i++)
+			{
+				let block = buffer.readUInt16BE(offset.value)
+				this.rData += block.toString(16)	
+
+				if (i < 7) this.rData += ':'
+
+				offset.value += 2
+			}
+			break
+	}
+
+	offset.value += rDataLength	
+}
+	
+DnsResourceRecord.read = (buffer, offset) =>
+{
+	let record = new DnsResourceRecord()
+
+	record.rName = OctetGroup.read(buffer, offset)
+	record.rType = buffer.readUInt16BE(offset.value)
+	offset.value += 2
+	record.rClass = buffer.readUInt16BE(offset.value)
+	offset.value += 2
+		
+	record.ttl = buffer.readUInt32BE(offset.value)
+	offset.value += 4
+
+	record.readData(buffer, offset)
+
+	return record
 }
 
 // Class to read and write whole DNS message
-class DnsMessage
+function DnsMessage() {}
+DnsMessage.prototype.readFlags = (flags) =>
 {
-	readFlags(flags)
-	{
-		this.isResponse = 		!!((flags & 0b1000000000000000) >> 15)
-		this.opCode = 			(flags & 0b0111100000000000) >> 11
-		this.isAuthority = 		!!((flags & 0b0000010000000000) >> 10)
-		this.isTruncated =		!!((flags & 0b0000001000000000) >> 9)
-		this.recursionDesired =		!!((flags & 0b0000000100000000) >> 8)
-		this.recursionAvailable =	!!((flags & 0b0000000010000000) >> 7)
-		this.responseCode =		(flags & 0b0000000000001111) >> 0
-	}
-
-	getFlags()
-	{
-		let flags = 0
-
-		flags |= (this.isResponse ? 0b1 : 0b0) << 15
-		flags |= this.opCode << 11
-		flags |= (this.isAuthority ? 0b1 : 0b0) << 10
-		flags |= (this.isTruncated ? 0b1 : 0b0) << 9
-		flags |= (this.recursionDesired ? 0b1 : 0b0) << 8
-		flags |= (this.recursionAvailable ? ob1 : 0b0) << 7
-		flags |= this.responseCode << 0
-
-		return flags
-	}
-
-	write()
-	{
-		let size = 0
-
-		this.questions.forEach((q) => size += q.size())
-		this.records.forEach((r) => size += r.size())
-
-		size += 12
-
-		let buffer = Buffer.alloc(size)
-		let offset = new Offset();
-
-		offset.value = buffer.writeUInt16BE(this.id, offset.value)
-		offset.value = buffer.writeUInt16BE(this.getFlags(), offset.value)
-		offset.value = buffer.writeUInt16BE(this.questions.length, offset.value)
-		offset.value = buffer.writeUInt16BE(this.records.length, offset.value)
-		offset.value = buffer.writeUInt16BE(0, offset.value)
-		offset.value = buffer.writeUInt16BE(0, offset.value)
-
-		this.questions.forEach((q) => q.write(buffer, offset))
-		this.records.forEach((r) => r.write(buffer, offset))
-
-		return buffer
-	}
-
-	static read(buffer)
-	{
-		let packet = new DnsMessage()
-
-		if (buffer.length < 12)
-			return new Error('Too short request')
-
-		packet.id = buffer.readUInt16BE(0)
-		packet.readFlags(buffer.readUInt16BE(2))
-
-		let questionCount = buffer.readUInt16BE(4)
-		let rrAnswersCount = buffer.readUInt16BE(6)
-		let nameServerAnswersCount = buffer.readUInt16BE(8)
-		let additionalAnswersCount = buffer.readUInt16BE(10)
-
-		packet.questions = []
-		packet.records = []
-
-		let offset = new Offset()
-		offset.value = 12
-
-		for (let i = 0; i < questionCount; i++)
-			packet.questions.push(DnsQuestion.read(buffer, offset))
-
-		for (let i = 0; i < rrAnswersCount; i++)
-			packet.records.push(DnsResourceRecord.read(buffer, offset))
-
-		return packet
-	}
-
-	static empty()
-	{
-		let packet = new DnsMessage()
-
-		packet.isResponse = false
-		packet.opCode = 0
-		packet.isAuthority = false
-		packet.isTruncated = false
-		packet.recursionDesired = false
-		packet.recursionAvailable = false
-		packet.responseCode = 0
-
-		packet.questions = []
-		packet.records = []
-
-		return packet
-	}
-
-	response()
-	{
-		let response = DnsMessage.empty()
-
-		response.isResponse = true
-		response.id = this.id
-		response.isAuthority = true
-		response.questions = this.questions
-
-		return response
-	}
+	this.isResponse = 		!!((flags & 0b1000000000000000) >> 15)
+	this.opCode = 			(flags & 0b0111100000000000) >> 11
+	this.isAuthority = 		!!((flags & 0b0000010000000000) >> 10)
+	this.isTruncated =		!!((flags & 0b0000001000000000) >> 9)
+	this.recursionDesired =		!!((flags & 0b0000000100000000) >> 8)
+	this.recursionAvailable =	!!((flags & 0b0000000010000000) >> 7)
+	this.responseCode =		(flags & 0b0000000000001111) >> 0
 }
+
+DnsMessage.prototype.getFlags = () =>
+{
+	let flags = 0
+
+	flags |= (this.isResponse ? 0b1 : 0b0) << 15
+	flags |= this.opCode << 11
+	flags |= (this.isAuthority ? 0b1 : 0b0) << 10
+	flags |= (this.isTruncated ? 0b1 : 0b0) << 9
+	flags |= (this.recursionDesired ? 0b1 : 0b0) << 8
+	flags |= (this.recursionAvailable ? ob1 : 0b0) << 7
+	flags |= this.responseCode << 0
+
+	return flags
+}
+DnsMessage.write = () =>
+{
+	let size = 0
+
+	this.questions.forEach((q) => size += q.size())
+	this.records.forEach((r) => size += r.size())
+
+	size += 12
+
+	let buffer = Buffer.alloc(size)
+	let offset = new Offset();
+
+	offset.value = buffer.writeUInt16BE(this.id, offset.value)			// ID 
+	offset.value = buffer.writeUInt16BE(this.getFlags(), offset.value)		// Flags
+	offset.value = buffer.writeUInt16BE(this.questions.length, offset.value)	// Questions count
+	offset.value = buffer.writeUInt16BE(this.records.length, offset.value)		// Records count
+	offset.value = buffer.writeUInt16BE(0, offset.value)				// Name server count
+	offset.value = buffer.writeUInt16BE(0, offset.value)				// Additionals count
+
+	this.questions.forEach((q) => q.write(buffer, offset))
+	this.records.forEach((r) => r.write(buffer, offset))
+
+	return buffer
+}
+
+DnsMessage.read = (buffer) =>
+{
+	let packet = new DnsMessage()
+
+	if (buffer.length < 12)
+		return new Error('Too short request')
+
+	packet.id = buffer.readUInt16BE(0)
+	packet.readFlags(buffer.readUInt16BE(2))
+
+	let questionCount = buffer.readUInt16BE(4)
+	let rrAnswersCount = buffer.readUInt16BE(6)
+	let nameServerAnswersCount = buffer.readUInt16BE(8)
+	let additionalAnswersCount = buffer.readUInt16BE(10)
+
+	packet.questions = []
+	packet.records = []
+
+	let offset = new Offset()
+	offset.value = 12
+
+	for (let i = 0; i < questionCount; i++)
+		packet.questions.push(DnsQuestion.read(buffer, offset))
+
+	for (let i = 0; i < rrAnswersCount; i++)
+		packet.records.push(DnsResourceRecord.read(buffer, offset))
+
+	return packet
+}
+
+DnsMessage.empty = () =>
+{
+	let packet = new DnsMessage()
+
+	packet.isResponse = false
+	packet.opCode = 0
+	packet.isAuthority = false
+	packet.isTruncated = false
+	packet.recursionDesired = false
+	packet.recursionAvailable = false
+	packet.responseCode = 0
+
+	packet.questions = []
+	packet.records = []
+
+	return packet
+}
+
+DnsMessage.prototype.response = () =>
+{
+	let response = DnsMessage.empty()
+
+	response.isResponse = true
+	response.id = this.id
+	response.isAuthority = true
+	response.questions = this.questions
+
+	return response
+}
+
 
 // Handles incoming DNS requests
 function handleDnsRequest(msg, rinfo)
@@ -487,6 +479,8 @@ function handleDnsRequest(msg, rinfo)
 		}
 	})
 
+	if (response.records.length === 0)
+		response.responseCode = 3
 
 	console.log(`Request from [${rinfo.address}]:${rinfo.port}:`)
 	console.log(request)

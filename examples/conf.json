@@ -2,7 +2,7 @@
 	"domains" :
 	[
 		{
-			"domain": "home.dyn.zi-data.com",
+			"domain": "home.dyn.zi-data.com.",
 			"password": "pass"
 		}
 	],
@@ -22,8 +22,7 @@
 	{
 		"key_path": "./key.pem",
 		"cert_path": "./cert.pem",
-		"key_passphrase": "1234",
-		"port": "444"
+		"port": "8443"
 	}
 }
 

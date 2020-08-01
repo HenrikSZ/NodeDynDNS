@@ -499,9 +499,11 @@ DnsMessage.prototype.error = function(errorCode)
 // Handles incoming DNS requests
 function handleDnsRequest(msg, rinfo)
 {
+	let request
+
 	try
 	{
-		let request = DnsMessage.read(msg)
+		request = DnsMessage.read(msg)
 	} catch (e)
 	{
 		if (e instanceof Error)

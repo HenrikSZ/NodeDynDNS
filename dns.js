@@ -140,18 +140,25 @@ OctetGroup.read = function(buffer, offset)
 	let result = ''
 	let groupLength = 0
 	
-	do
+	try
 	{
-		groupLength = buffer.readInt8(offset.value)
-		offset.value++
-			if (groupLength > 0)
+		do
 		{
-			const group = buffer.subarray(offset.value, offset.value + groupLength)
-			result += group.toString('ascii')
-			offset.value += groupLength
-			result += '.'
-		}
-	} while (groupLength > 0)
+			groupLength = buffer.readUInt8(offset.value)
+			offset.value++
+				if (groupLength > 0)
+			{
+				const group = buffer.subarray(offset.value, offset.value + groupLength)
+				result += group.toString('ascii')
+				offset.value += groupLength
+				result += '.'
+			}
+		} while (groupLength > 0)
+	} catch (e)
+	{
+		if (e instanceof Error)
+			throw new Error('Malformed Octet Group')
+	}
 
 	return result
 }
@@ -172,12 +179,20 @@ function DnsQuestion() {}
 DnsQuestion.read = function(buffer, offset)
 {	
 	let question = new DnsQuestion()
-	question.qName = OctetGroup.read(buffer, offset)
-	question.qType = buffer.readUInt16BE(offset.value)
-	offset.value += 2
-	question.qClass = buffer.readUInt16BE(offset.value)
-	offset.value += 2
-		
+
+	try
+	{
+		question.qName = OctetGroup.read(buffer, offset)
+		question.qType = buffer.readUInt16BE(offset.value)
+		offset.value += 2
+		question.qClass = buffer.readUInt16BE(offset.value)
+		offset.value += 2
+	} catch (e)
+	{
+		if (e instanceof Error)
+			throw new Error('Malformed DNS Question')
+	}
+
 	return question
 }
 
@@ -282,55 +297,69 @@ DnsResourceRecord.empty = function()
 
 DnsResourceRecord.prototype.readData = function(buffer, offset)
 {
-	let rDataLength = buffer.readUInt16BE(offset.value)
-	offset.value += 2
-
-	switch (this.rType)
+	try
 	{
-		case TYPE_A:
-			this.rData = ''
-			for (let i = 0; i < 4; i++)
-			{
-				let block = buffer.readUInt8(offset.value)
-				this.rData += block.toString()
-
-				if (i < 3) this.rData += '.'
-				offset.value++
-			}
-			break
-		case TYPE_AAAA:
-			this.rData = ''
-
-			for (let i = 0; i < 8; i++)
-			{
-				let block = buffer.readUInt16BE(offset.value)
-				this.rData += block.toString(16)	
-
-				if (i < 7) this.rData += ':'
-
-				offset.value += 2
-			}
-			break
+		let rDataLength = buffer.readUInt16BE(offset.value)
+		offset.value += 2
+	
+		switch (this.rType)
+		{
+			case TYPE_A:
+				this.rData = ''
+				for (let i = 0; i < 4; i++)
+				{
+					let block = buffer.readUInt8(offset.value)
+					this.rData += block.toString()
+	
+					if (i < 3) this.rData += '.'
+					offset.value++
+				}
+				break
+			case TYPE_AAAA:
+				this.rData = ''
+	
+				for (let i = 0; i < 8; i++)
+				{
+					let block = buffer.readUInt16BE(offset.value)
+					this.rData += block.toString(16)	
+	
+					if (i < 7) this.rData += ':'
+	
+					offset.value += 2
+				}
+				break
+		}
+	} catch (e)
+	{
+		if (e instanceof Error)
+			throw new Error('Malformed DNS RR data')
 	}
 
-	offset.value += rDataLength	
+	offset.value += rDataLength
 }
 	
 DnsResourceRecord.read = function(buffer, offset)
 {
 	let record = new DnsResourceRecord()
 
-	record.rName = OctetGroup.read(buffer, offset)
-	record.rType = buffer.readUInt16BE(offset.value)
-	offset.value += 2
-	record.rClass = buffer.readUInt16BE(offset.value)
-	offset.value += 2
+	try
+	{
+		record.rName = OctetGroup.read(buffer, offset)
+		record.rType = buffer.readUInt16BE(offset.value)
+		offset.value += 2
+		record.rClass = buffer.readUInt16BE(offset.value)
+		offset.value += 2
 		
-	record.ttl = buffer.readUInt32BE(offset.value)
-	offset.value += 4
+		record.ttl = buffer.readUInt32BE(offset.value)
+		offset.value += 4
 
-	record.readData(buffer, offset)
-
+		record.readData(buffer, offset)
+	} catch (e)
+	{
+		if (e instanceof Error)
+			throw new Error('Malformed DNS RR')
+	}
+	
 	return record
 }
 
@@ -392,25 +421,34 @@ DnsMessage.read = function(buffer)
 	let packet = DnsMessage.empty()
 
 	if (buffer.length < 12)
-		return new Error('Too short request')
+		throw new Error('Malformed DNS Request')
 
-	packet.id = buffer.readUInt16BE(0)
-	packet.readFlags(buffer.readUInt16BE(2))
+	try
+	{
+		packet.id = buffer.readUInt16BE(0)
+		packet.readFlags(buffer.readUInt16BE(2))
 
-	let questionCount = buffer.readUInt16BE(4)
-	let rrAnswersCount = buffer.readUInt16BE(6)
-	let nameServerAnswersCount = buffer.readUInt16BE(8)
-	let additionalAnswersCount = buffer.readUInt16BE(10)
+		let questionCount = buffer.readUInt16BE(4)
+		let rrAnswersCount = buffer.readUInt16BE(6)
+		let nameServerAnswersCount = buffer.readUInt16BE(8)
+		let additionalAnswersCount = buffer.readUInt16BE(10)
 
-	let offset = new Offset()
-	offset.value = 12
+		let offset = new Offset()
+		offset.value = 12
 
-	for (let i = 0; i < questionCount; i++)
-		packet.questions.push(DnsQuestion.read(buffer, offset))
+		for (let i = 0; i < questionCount; i++)
+			packet.questions.push(DnsQuestion.read(buffer, offset))
 
-	for (let i = 0; i < rrAnswersCount; i++)
-		packet.records.push(DnsResourceRecord.read(buffer, offset))
-
+		for (let i = 0; i < rrAnswersCount; i++)
+			packet.records.push(DnsResourceRecord.read(buffer, offset))
+	} catch (e) {
+		if (e instanceof Error)
+		{
+			let err = new Error('Malformed DNS Request')
+			err.packet = packet
+			throw err
+		}
+	}
 
 	return packet
 }
@@ -445,12 +483,37 @@ DnsMessage.prototype.response = function()
 	return response
 }
 
+DnsMessage.prototype.error = function(errorCode)
+{
+	let response = DnsMessage.empty()
+
+	response.isReponse = true
+	response.id = this.id
+	response.isAuthority = true
+	respons.responseCode = errorCode
+
+	return response
+}
+
 
 // Handles incoming DNS requests
 function handleDnsRequest(msg, rinfo)
 {
-	let request = DnsMessage.read(msg)
-
+	try
+	{
+		let request = DnsMessage.read(msg)
+	} catch (e)
+	{
+		if (e instanceof Error)
+		{
+			console.log('DNS read error (sending error response)')
+			if (e.packet)
+			{
+				udpSocket.send(e.packet.error(RCODE_FORMAT_ERROR).write(), rinfo.port, rinfo.address)
+			}
+			return
+		}
+	}
 	/*if (request instanceof Error)
 		console.log(request)
 	else

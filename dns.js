@@ -62,7 +62,7 @@ function handleIP(req, domain)
 	else if (isIp.v6(ip))
 		elem.aaaa = ip
 	else
-		return new Error('Invalid IP format')
+		throw new Error('Invalid IP format')
 
 
 	return ip;
@@ -87,16 +87,19 @@ function handleUpdateRequest(req, res)
 
 	if (domain)
 	{
-		const result = handleIP(req, domain)
-
-		if (result instanceof Error)
+		try
+		{
+			const result = handleIP(req, domain)
+			res.writeHead(200)
+			res.end('IP will be set to ' + result)
+			console.log(`Updated IP address to ${result}`)
+		} catch (e)
 		{
 			res.writeHead(400)
 			res.end(result.message)
+			console.log(result.message)
+			return
 		}
-
-		res.writeHead(200)
-		res.end('IP will be set to ' + result)
 	}
 	else
 	{

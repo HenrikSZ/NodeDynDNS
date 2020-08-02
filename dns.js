@@ -490,7 +490,7 @@ DnsMessage.prototype.error = function(errorCode)
 	response.isReponse = true
 	response.id = this.id
 	response.isAuthority = true
-	respons.responseCode = errorCode
+	response.responseCode = errorCode
 
 	return response
 }

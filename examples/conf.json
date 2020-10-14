@@ -23,6 +23,11 @@
 		"key_path": "./key.pem",
 		"cert_path": "./cert.pem",
 		"port": "8443"
+	},
+
+	"http":
+	{
+		"port": "8080"
 	}
 }
 

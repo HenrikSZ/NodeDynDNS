@@ -1,5 +1,6 @@
 "use strict";
 
+const http = require('http')
 const https = require('https')
 const auth = require('basic-auth')
 const fs = require('fs')
@@ -9,16 +10,19 @@ const dgram = require('dgram')
 
 const config = require('./conf.json')
 
-let udpSocket
+let udp4Socket
 let httpsServer
+let httpServer
 let data
 
+// Saves the current data (records, ips) to a json file
 function saveData()
 {
 	fs.writeFileSync('./storage.json', JSON.stringify(data))
 	console.log('Saved resource record data')
 }
 
+// Correct signal handling
 process.on('SIGINT', () => process.exit())
 process.on('SIGTERM', () => process.exit())
 process.on('exit', () => saveData())
@@ -91,7 +95,7 @@ function handleUpdateRequest(req, res)
 		{
 			const result = handleIP(req, domain)
 			res.writeHead(200)
-			res.end('IP will be set to ' + result)
+			res.end(`IP will be set to ${result}`)
 			console.log(`Updated IP address to ${result}`)
 		} catch (e)
 		{
@@ -514,7 +518,7 @@ function handleDnsRequest(msg, rinfo)
 			console.log('DNS read error (sending error response)')
 			if (e.packet)
 			{
-				udpSocket.send(e.packet.error(RCODE_FORMAT_ERROR).write(), rinfo.port, rinfo.address)
+				udp4Socket.send(e.packet.error(RCODE_FORMAT_ERROR).write(), rinfo.port, rinfo.address)
 			}
 			return
 		}
@@ -562,18 +566,17 @@ function handleDnsRequest(msg, rinfo)
 	console.log('Response:')
 	console.log(response.records)
 
-	udpSocket.send(response.write(), rinfo.port, rinfo.address)
+	udp4Socket.send(response.write(), rinfo.port, rinfo.address)
 }
 
-const maxToInitialize = 2
-let initialized = 0
+let toBePrivileged = 3
 
 // Determines if all initialization processes are finished and eventually drops root privileges
 function dropPrivileges()
 {
-	initialized++
+	toBePrivileged--
 
-	if (initialized == maxToInitialize)
+	if (toBePrivileged === 0)
 	{
 		process.setgid(config.system.group)
 		process.setuid(config.system.user)
@@ -583,34 +586,56 @@ function dropPrivileges()
 }
 
 
-const httpsOptions = {
-	key: fs.readFileSync(config.https.key_path),
-	cert: fs.readFileSync(config.https.cert_path)
-}
-
-console.log(`Using key ${config.https.key_path} and certificate ${config.https.cert_path}`)
-
-
 // Setup method called after the existence of necessary files is checked
 function setup()
 {
-	udpSocket = dgram.createSocket('udp4')
-	udpSocket.on('message', (msg, rinfo) => {
+	udp4Socket = dgram.createSocket('udp4')
+	udp4Socket.on('message', (msg, rinfo) => {
 		handleDnsRequest(msg, rinfo)
 	})
-	
-	httpsServer = https.createServer(httpsOptions, (req, res) => {
-		handleUpdateRequest(req, res)
-	})
-	
-	udpSocket.bind(53, config.dns.address, () => {
+	udp4Socket.bind(53, config.dns.address, () => {
 		console.log('Listening on port 53 for the DNS service')
 		dropPrivileges()
 	})
-	httpsServer.listen(config.https.port, () => {
-		console.log(`Listening on port ${config.https.port} for ip updates via HTTPS`)
+	
+	if (config.https)
+	{
+		const httpsOptions = {
+			key: fs.readFileSync(config.https.key_path),
+			cert: fs.readFileSync(config.https.cert_path)
+		}
+		
+		console.log(`Using key ${config.https.key_path} and certificate ${config.https.cert_path}`)
+
+		httpsServer = https.createServer(httpsOptions, (req, res) => {
+			handleUpdateRequest(req, res)
+		})
+		httpsServer.listen(config.https.port, () => {
+			console.log(`Listening on port ${config.https.port} for ip updates via HTTPS`)
+			dropPrivileges()
+		})
+	}
+	else
+	{
 		dropPrivileges()
-	})
+	}
+	
+	if (config.http)
+	{
+		toBePrivileged++
+
+		httpServer = http.createServer((req, res) => {
+			handleUpdateRequest(req, res)
+		})
+		httpServer.listen(config.http.port, () => {
+			console.log(`Listening on port ${config.http.port} for ip updates via HTTP`)
+			dropPrivileges()
+		})
+	}
+	else
+	{
+		dropPrivileges()
+	}
 }
 
 fs.access('./storage.json', (err) => {

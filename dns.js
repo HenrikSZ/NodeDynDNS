@@ -622,8 +622,6 @@ function setup()
 	
 	if (config.http)
 	{
-		toBePrivileged++
-
 		httpServer = http.createServer((req, res) => {
 			handleUpdateRequest(req, res)
 		})

@@ -561,10 +561,10 @@ function handleDnsRequest(msg, rinfo)
 		response.responseCode = 3
 
 	console.log(`Request from [${rinfo.address}]:${rinfo.port}:`)
-	console.log(request.questions)
+	//console.log(request.questions)
 
 	console.log('Response:')
-	console.log(response.records)
+	//console.log(response.records)
 
 	udp4Socket.send(response.write(), rinfo.port, rinfo.address)
 }
@@ -585,9 +585,7 @@ function dropPrivileges()
 	}
 }
 
-
-// Setup method called after the existence of necessary files is checked
-function setup()
+function setupUdp()
 {
 	udp4Socket = dgram.createSocket('udp4')
 	udp4Socket.on('message', (msg, rinfo) => {
@@ -597,31 +595,51 @@ function setup()
 		console.log('Listening on port 53 for the DNS service')
 		dropPrivileges()
 	})
-	
+}
+
+function setupHttps()
+{
 	if (config.https)
 	{
-		const httpsOptions = {
-			key: fs.readFileSync(config.https.key_path),
-			cert: fs.readFileSync(config.https.cert_path)
-		}
-		
-		console.log(`Using key ${config.https.key_path} and certificate ${config.https.cert_path}`)
+		if (!config.https.key_path || !config.https.cert_path || !config.https.port)
+			throw new Error("Options key_path, cert_path and port have to be set for the http service");
 
-		httpsServer = https.createServer(httpsOptions, (req, res) => {
-			handleUpdateRequest(req, res)
-		})
-		httpsServer.listen(config.https.port, () => {
-			console.log(`Listening on port ${config.https.port} for ip updates via HTTPS`)
-			dropPrivileges()
-		})
+		const httpsOptions = {
+			key: '',
+			cert: ''
+		}
+
+		fs.promises.readFile(config.https.key_path).then((key) => {
+			httpsOptions.key = key
+		}).then(() => {
+			fs.promises.readFile(config.https.cert_path).then((cert) => {
+				httpsOptions.cert = cert
+			}).then(() => {
+				console.log(`Using key ${config.https.key_path} and certificate ${config.https.cert_path}`)
+
+				httpsServer = https.createServer(httpsOptions, (req, res) => {
+					handleUpdateRequest(req, res)
+				})
+				httpsServer.listen(config.https.port, () => {
+					console.log(`Listening on port ${config.https.port} for ip updates via HTTPS`)
+					dropPrivileges()
+				})
+			}).catch((err) => console.log(err))
+		}).catch((err) => console.log(err))
 	}
 	else
 	{
 		dropPrivileges()
 	}
-	
+}
+
+function setupHttp()
+{
 	if (config.http)
 	{
+		if (!config.http.port)
+			throw new Error("Option port has to be set for the http service");
+
 		httpServer = http.createServer((req, res) => {
 			handleUpdateRequest(req, res)
 		})
@@ -634,6 +652,14 @@ function setup()
 	{
 		dropPrivileges()
 	}
+}
+
+// Setup method called after the existence of necessary files is checked
+function setup()
+{
+	setupUdp()
+	setupHttps()
+	setupHttp()	
 }
 
 fs.access('./storage.json', (err) => {

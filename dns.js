@@ -455,7 +455,7 @@ class DnsMessage
 		flags |= (this.isAuthority ? 0b1 : 0b0) << 10
 		flags |= (this.isTruncated ? 0b1 : 0b0) << 9
 		flags |= (this.recursionDesired ? 0b1 : 0b0) << 8
-		flags |= (this.recursionAvailable ? ob1 : 0b0) << 7
+		flags |= (this.recursionAvailable ? 0b1 : 0b0) << 7
 		flags |= this.responseCode << 0
 
 		return flags

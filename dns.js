@@ -461,7 +461,7 @@ class DnsMessage
 		return flags
 	}
 
-	write(buffer, offset)
+	write()
 	{
 		let size = 0
 

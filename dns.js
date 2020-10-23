@@ -150,6 +150,7 @@ class OctetGroup
 	{
 		let result = ''
 		let groupLength = 0
+		let usedPointer = false
 		
 		try
 		{
@@ -157,8 +158,23 @@ class OctetGroup
 			{
 				groupLength = buffer.readUInt8(offset.value)
 				offset.value++
-					if (groupLength > 0)
+				
+				if (groupLength > 0)
 				{
+					if (((groupLength & 0b10000000) >> 7) == 1
+						&& ((groupLength & 0b01000000) >> 6) == 1)
+					{
+						// Message pointer
+
+						if (usedPointer)
+							throw new Error('Pointer can only be used once per domain name')
+						
+						usedPointer = true
+						offset = new Offset()
+						offset.value = groupLength & 0b00111111
+						continue
+					}
+
 					const group = buffer.subarray(offset.value, offset.value + groupLength)
 					result += group.toString('ascii')
 					offset.value += groupLength

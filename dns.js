@@ -93,10 +93,14 @@ function handleUpdateRequest(req, res)
 		switch (true) {
 			case e instanceof FormatError:
 				res.writeHead(422)
+				break
+
 			case e instanceof AuthenticationError:
 				res.writeHead(401, {
 					'WWW-Authenticate': 'Basic realm="Login to change IP"'
 				})
+				break
+				
 			default:
 				res.writeHead(400)
 		} 
@@ -539,6 +543,8 @@ function handleDnsRequest(msg, rinfo)
 			{
 				case e instanceof DnsFormatError:
 					errorCode = RCODE_FORMAT_ERROR
+					break
+
 				default:
 					errorCode = RCODE_NO_ERROR
 			}

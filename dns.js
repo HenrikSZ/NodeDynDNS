@@ -94,7 +94,9 @@ function handleUpdateRequest(req, res)
 			case e instanceof FormatError:
 				res.writeHead(422)
 			case e instanceof AuthenticationError:
-				res.writeHead(401)
+				res.writeHead(401, {
+					'WWW-Authenticate': 'Basic realm="Login to change IP"'
+				})
 			default:
 				res.writeHead(400)
 		} 

@@ -27,14 +27,6 @@ process.on('SIGINT', () => process.exit())
 process.on('SIGTERM', () => process.exit())
 process.on('exit', () => saveData())
 
-// Used to send responses to invalid http requests
-function sendErrorResponse(res)
-{
-	res.statusCode = 401
-	res.setHeader('WWW-Authenticate', 'Basic realm="NodeDynDNS"')
-	res.end('Invalid authentication')
-}
-
 // Returns the IP address from the request. Either from the connection or by the request parameter ip.
 function getIP(req)
 {
@@ -66,48 +58,78 @@ function handleIP(req, domain)
 	else if (isIp.v6(ip))
 		elem.aaaa = ip
 	else
-		throw new Error('Invalid IP format')
-
+		throw new FormatError('Invalid IP format')
 
 	return ip;
 }
 
 // Determines if a request is valid and returns the authenticated username or false
-function isValidRequest(req)
+function getTargetDomain(req)
 {
 	let credentials = auth(req)
 	if (!credentials)
-		return false
+		throw new AuthenticationError("No credentials supplied")
 
 	let elem = config.domains.find((e) => (e.domain == credentials.name && e.password == credentials.pass))
 
-	return elem ? elem.domain : false
+	if (!elem)
+		throw new AuthenticationError("Bad credentials supplied")
+
+	return elem.domain
 }
 
 // The entry point to the IP update system
 function handleUpdateRequest(req, res)
 {
-	let domain = isValidRequest(req)
+	try {
+		const domain = getTargetDomain(req)
+		const result = handleIP(req, domain)
 
-	if (domain)
+		res.writeHead(200)
+		res.end(`IP will be set to ${result}`)
+		console.log(`Updated IP address to ${result}`)
+	} catch (e)
 	{
-		try
-		{
-			const result = handleIP(req, domain)
-			res.writeHead(200)
-			res.end(`IP will be set to ${result}`)
-			console.log(`Updated IP address to ${result}`)
-		} catch (e)
-		{
-			res.writeHead(400)
-			res.end(result.message)
-			console.log(result.message)
-			return
-		}
+		switch (true) {
+			case e instanceof FormatError:
+				res.writeHead(422)
+			case e instanceof AuthenticationError:
+				res.writeHead(401)
+			default:
+				res.writeHead(400)
+		} 
+		
+		res.end(`Error: ${e.message}`)
+		console.log(`${e.name}: ${e.message}`)
 	}
-	else
-	{
-		sendErrorResponse(res)
+}
+
+
+class DnsFormatError extends Error {
+	constructor(message) {
+		super(message)
+		this.name = 'DnsFormatError'
+	}
+}
+
+class FormatError extends Error {
+	constructor(message) {
+		super(message)
+		this.name = 'FormatError'
+	}
+}
+
+class AuthenticationError extends Error {
+	constructor(message) {
+		super(message)
+		this.name = 'AuthenticationError'
+	}
+}
+
+class OptionFileFormatError extends Error {
+	constructor(message) {
+		super(message)
+		this.name = 'OptionFileError'
 	}
 }
 
@@ -152,40 +174,33 @@ class OctetGroup
 		let groupLength = 0
 		let usedPointer = false
 		
-		try
+		do
 		{
-			do
+			groupLength = buffer.readUInt8(offset.value)
+			offset.value++
+			
+			if (groupLength > 0)
 			{
-				groupLength = buffer.readUInt8(offset.value)
-				offset.value++
-				
-				if (groupLength > 0)
+				if (((groupLength & 0b10000000) >> 7) == 1
+					&& ((groupLength & 0b01000000) >> 6) == 1)
 				{
-					if (((groupLength & 0b10000000) >> 7) == 1
-						&& ((groupLength & 0b01000000) >> 6) == 1)
-					{
-						// Message pointer
+					// Message pointer
 
-						if (usedPointer)
-							throw new Error('Pointer can only be used once per domain name')
-						
-						usedPointer = true
-						offset = new Offset()
-						offset.value = groupLength & 0b00111111
-						continue
-					}
-
-					const group = buffer.subarray(offset.value, offset.value + groupLength)
-					result += group.toString('ascii')
-					offset.value += groupLength
-					result += '.'
+					if (usedPointer)
+						throw new DnsFormatError('Octet Group Pointer can only be used once per domain name')
+					
+					usedPointer = true
+					offset = new Offset()
+					offset.value = groupLength & 0b00111111
+					continue
 				}
-			} while (groupLength > 0)
-		} catch (e)
-		{
-			if (e instanceof Error)
-				throw new Error('Malformed Octet Group')
-		}
+
+				const group = buffer.subarray(offset.value, offset.value + groupLength)
+				result += group.toString('ascii')
+				offset.value += groupLength
+				result += '.'
+			}
+		} while (groupLength > 0)
 
 		return result
 	}
@@ -209,18 +224,11 @@ class DnsQuestion
 	{
 		let question = new DnsQuestion()
 
-		try
-		{
-			question.qName = OctetGroup.read(buffer, offset)
-			question.qType = buffer.readUInt16BE(offset.value)
-			offset.value += 2
-			question.qClass = buffer.readUInt16BE(offset.value)
-			offset.value += 2
-		} catch (e)
-		{
-			if (e instanceof Error)
-				throw new Error('Malformed DNS Question')
-		}
+		question.qName = OctetGroup.read(buffer, offset)
+		question.qType = buffer.readUInt16BE(offset.value)
+		offset.value += 2
+		question.qClass = buffer.readUInt16BE(offset.value)
+		offset.value += 2
 
 		return question
 	}
@@ -233,8 +241,8 @@ class DnsQuestion
 	size()
 	{
 		let size = 0
-	if (this.qName)
-		size += this.qName.length
+		if (this.qName)
+			size += this.qName.length
 		size += 4	// QType and Qclass fields
 		size++		// Leading length octet of NAME
 	
@@ -270,23 +278,16 @@ class DnsResourceRecord
 	{
 		let record = new DnsResourceRecord()
 
-		try
-		{
-			record.rName = OctetGroup.read(buffer, offset)
-			record.rType = buffer.readUInt16BE(offset.value)
-			offset.value += 2
-			record.rClass = buffer.readUInt16BE(offset.value)
-			offset.value += 2
-			
-			record.ttl = buffer.readUInt32BE(offset.value)
-			offset.value += 4
+		record.rName = OctetGroup.read(buffer, offset)
+		record.rType = buffer.readUInt16BE(offset.value)
+		offset.value += 2
+		record.rClass = buffer.readUInt16BE(offset.value)
+		offset.value += 2
+		
+		record.ttl = buffer.readUInt32BE(offset.value)
+		offset.value += 4
 
-			record.readData(buffer, offset)
-		} catch (e)
-		{
-			if (e instanceof Error)
-				throw new Error('Malformed DNS RR')
-		}
+		record.readData(buffer, offset)
 		
 		return record
 	}
@@ -343,50 +344,43 @@ class DnsResourceRecord
 	write(buffer, offset)
 	{
 		OctetGroup.write(buffer, offset, this.rName)
-	offset.value = buffer.writeUInt16BE(this.rType, offset.value)
-	offset.value = buffer.writeUInt16BE(this.rClass, offset.value)
-	offset.value = buffer.writeUInt32BE(this.ttl, offset.value)
-	this.writeData(buffer, offset)
+		offset.value = buffer.writeUInt16BE(this.rType, offset.value)
+		offset.value = buffer.writeUInt16BE(this.rClass, offset.value)
+		offset.value = buffer.writeUInt32BE(this.ttl, offset.value)
+		this.writeData(buffer, offset)
 	}
 
 	readData(buffer, offset)
 	{
-		try
+		let rDataLength = buffer.readUInt16BE(offset.value)
+		offset.value += 2
+	
+		switch (this.rType)
 		{
-			let rDataLength = buffer.readUInt16BE(offset.value)
-			offset.value += 2
-		
-			switch (this.rType)
-			{
-				case TYPE_A:
-					this.rData = ''
-					for (let i = 0; i < 4; i++)
-					{
-						let block = buffer.readUInt8(offset.value)
-						this.rData += block.toString()
-		
-						if (i < 3) this.rData += '.'
-						offset.value++
-					}
-					break
-				case TYPE_AAAA:
-					this.rData = ''
-		
-					for (let i = 0; i < 8; i++)
-					{
-						let block = buffer.readUInt16BE(offset.value)
-						this.rData += block.toString(16)	
-		
-						if (i < 7) this.rData += ':'
-		
-						offset.value += 2
-					}
-					break
-			}
-		} catch (e)
-		{
-			if (e instanceof Error)
-				throw new Error('Malformed DNS RR data')
+			case TYPE_A:
+				this.rData = ''
+				for (let i = 0; i < 4; i++)
+				{
+					let block = buffer.readUInt8(offset.value)
+					this.rData += block.toString()
+	
+					if (i < 3) this.rData += '.'
+					offset.value++
+				}
+				break
+			case TYPE_AAAA:
+				this.rData = ''
+	
+				for (let i = 0; i < 8; i++)
+				{
+					let block = buffer.readUInt16BE(offset.value)
+					this.rData += block.toString(16)	
+	
+					if (i < 7) this.rData += ':'
+	
+					offset.value += 2
+				}
+				break
 		}
 
 		offset.value += rDataLength
@@ -419,7 +413,7 @@ class DnsMessage
 		let packet = DnsMessage.empty()
 
 		if (buffer.length < 12)
-			throw new Error('Malformed DNS Request')
+			throw new DnsFormatError('DNS Request too short')
 
 		try
 		{
@@ -440,12 +434,9 @@ class DnsMessage
 			for (let i = 0; i < rrAnswersCount; i++)
 				packet.records.push(DnsResourceRecord.read(buffer, offset))
 		} catch (e) {
-			if (e instanceof Error)
-			{
-				let err = new Error('Malformed DNS Request')
-				err.packet = packet
-				throw err
-			}
+			let err = new DnsFormatError('Malformed DNS Request')
+			err.packet = packet
+			throw err
 		}
 
 		return packet
@@ -537,22 +528,24 @@ function handleDnsRequest(msg, rinfo)
 		request = DnsMessage.read(msg)
 	} catch (e)
 	{
-		if (e instanceof Error)
+		console.log('DNS read error (sending error response)')
+		if (e.packet)
 		{
-			console.log('DNS read error (sending error response)')
-			if (e.packet)
-			{
-				udp4Socket.send(e.packet.error(RCODE_FORMAT_ERROR).write(), rinfo.port, rinfo.address)
-			}
-			return
-		}
-	}
-	/*if (request instanceof Error)
-		console.log(request)
-	else
-		console.log(request)
+			let errorCode
 
-		*/
+			switch (true)
+			{
+				case e instanceof DnsFormatError:
+					errorCode = RCODE_FORMAT_ERROR
+				default:
+					errorCode = RCODE_NO_ERROR
+			}
+			udp4Socket.send(e.packet.error(errorCode).write(), rinfo.port, rinfo.address)
+		}
+
+		return
+	}
+	
 	let response = request.response()
 	let domainAvailable = false
 
@@ -626,7 +619,7 @@ function setupHttps()
 	if (config.https)
 	{
 		if (!config.https.key_path || !config.https.cert_path || !config.https.port)
-			throw new Error("Options key_path, cert_path and port have to be set for the http service");
+			throw new OptionFileFormatError("Options key_path, cert_path and port have to be set for the http service");
 
 		const httpsOptions = {
 			key: '',
@@ -662,7 +655,7 @@ function setupHttp()
 	if (config.http)
 	{
 		if (!config.http.port)
-			throw new Error("Option port has to be set for the http service");
+			throw new OptionFileFormatError("Option port has to be set for the http service");
 
 		httpServer = http.createServer((req, res) => {
 			handleUpdateRequest(req, res)
@@ -694,4 +687,3 @@ fs.access('./storage.json', (err) => {
 
 	setup()
 })
-

@@ -7,12 +7,11 @@ const fs = require('fs')
 const url = require('url')
 const isIp = require('is-ip')
 const dgram = require('dgram')
+const bcrypt = require('bcrypt')
+const HashMap = require('hashmap')
 
 const config = require('./conf.json')
 
-let udp4Socket
-let httpsServer
-let httpServer
 let data
 
 // Saves the current data (records, ips) to a json file
@@ -27,89 +26,121 @@ process.on('SIGINT', () => process.exit())
 process.on('SIGTERM', () => process.exit())
 process.on('exit', () => saveData())
 
-// Returns the IP address from the request. Either from the connection or by the request parameter ip.
-function getIP(req)
+class RequestRateLimiter
 {
-	let queryObject = url.parse(req.url, true).query
-	let ipString = ''
+	constructor(numRequests, minutes)
+	{
+		this.numRequests = numRequests
+		this.minutes = minutes
+		this.ipMap = new HashMap()
+		this.lastRotation = Date.now() / 60000
+	}
 
-	if (queryObject.ip)
-		ipString = queryObject.ip
-	else
-		ipString = req.connection.remoteAddress
+	checkIP(ip)
+	{
+		let count = this.ipMap.get(ip)
 
-	return ipString
+		if (Date.now() / 60000 > this.lastRotation)
+		{
+			this.lastRotation = Date.now() / 60000
+			count = 0
+		}
+
+		count++
+
+		if (count <= this.numRequests)
+		{
+			this.ipMap.set(ip, count)
+			return true
+		}
+		else
+		{
+			return false
+		}
+	}
 }
 
-// Handles the determination of the IP address and the update of future DNS responses
-function handleIP(req, domain)
+class UpdateRequestHandler
 {
-	let ip = getIP(req)
-
-	let elem = data.records.find((element) => (element.domain == domain))
-	if (!elem)
+	handle(req, res)
 	{
-		elem = { domain: domain }
-		data.records.push(elem)
-	}
+		try {
+			const domain = this.getTargetDomain(req)
+			const result = this.handleIP(req, domain)
 	
-	if (isIp.v4(ip))
-		elem.a = ip
-	else if (isIp.v6(ip))
-		elem.aaaa = ip
-	else
-		throw new FormatError('Invalid IP format')
+			res.writeHead(200)
+			res.end(`IP will be set to ${result}`)
+			console.log(`Updated IP address to ${result}`)
+		} catch (e)
+		{
+			switch (true) {
+				case e instanceof FormatError:
+					res.writeHead(422)
+					break
+	
+				case e instanceof AuthenticationError:
+					res.writeHead(401, {
+						'WWW-Authenticate': 'Basic realm="Login to change IP"'
+					})
+					break
+	
+				default:
+					res.writeHead(400)
+			} 
+			
+			res.end(`Error: ${e.message}`)
+			console.log(`${e.name}: ${e.message}`)
+		}
+	}
 
-	return ip;
-}
-
-// Determines if a request is valid and returns the authenticated username or false
-function getTargetDomain(req)
-{
-	let credentials = auth(req)
-	if (!credentials)
-		throw new AuthenticationError("No credentials supplied")
-
-	let elem = config.domains.find((e) => (e.domain == credentials.name && e.password == credentials.pass))
-
-	if (!elem)
-		throw new AuthenticationError("Bad credentials supplied")
-
-	return elem.domain
-}
-
-// The entry point to the IP update system
-function handleUpdateRequest(req, res)
-{
-	try {
-		const domain = getTargetDomain(req)
-		const result = handleIP(req, domain)
-
-		res.writeHead(200)
-		res.end(`IP will be set to ${result}`)
-		console.log(`Updated IP address to ${result}`)
-	} catch (e)
+	getTargetDomain(req)
 	{
-		switch (true) {
-			case e instanceof FormatError:
-				res.writeHead(422)
-				break
+		let credentials = auth(req)
+		if (!credentials || !credentials.name || !credentials.pass)
+			throw new AuthenticationError("No credentials supplied")
+	
+		let elem = config.domains.find((e) => (e.domain == credentials.name))
+	
+		if (!elem || bcrypt.compareSync(credentials.pass, e.password))
+			throw new AuthenticationError("Bad credentials supplied")
+	
+		return elem.domain
+	}
 
-			case e instanceof AuthenticationError:
-				res.writeHead(401, {
-					'WWW-Authenticate': 'Basic realm="Login to change IP"'
-				})
-				break
-				
-			default:
-				res.writeHead(400)
-		} 
+	handleIP(req, domain)
+	{
+		let ip = getIP(req)
+
+		let elem = data.records.find((element) => (element.domain == domain))
+		if (!elem)
+		{
+			elem = { domain: domain }
+			data.records.push(elem)
+		}
 		
-		res.end(`Error: ${e.message}`)
-		console.log(`${e.name}: ${e.message}`)
+		if (isIp.v4(ip))
+			elem.a = ip
+		else if (isIp.v6(ip))
+			elem.aaaa = ip
+		else
+			throw new FormatError('Invalid IP format')
+
+		return ip;
+	}
+
+	getIP(req)
+	{
+		let queryObject = url.parse(req.url, true).query
+		let ipString = ''
+
+		if (queryObject.ip)
+			ipString = queryObject.ip
+		else
+			ipString = req.connection.remoteAddress
+
+		return ipString
 	}
 }
-
 
 class DnsFormatError extends Error {
 	constructor(message) {
@@ -136,6 +167,13 @@ class OptionFileFormatError extends Error {
 	constructor(message) {
 		super(message)
 		this.name = 'OptionFileError'
+	}
+}
+
+class RequestRateExceededError extends Error {
+	constructor(message) {
+		super(message)
+		this.name = 'RequestRateExceededError'
 	}
 }
 
@@ -524,167 +562,182 @@ class DnsMessage
 	}
 }
 
-// Handles incoming DNS requests
-function handleDnsRequest(msg, rinfo)
+class DnsRequestHandler
 {
-	let request
-
-	try
+	constructor(requestRateLimiter, privilegeManager)
 	{
-		request = DnsMessage.read(msg)
-	} catch (e)
-	{
-		console.log('DNS read error (sending error response)')
-		if (e.packet)
-		{
-			let errorCode
-
-			switch (true)
+		this.requestRateLimiter = requestRateLimiter
+		this.udp4Socket = dgram.createSocket('udp4')
+		this.udp4Socket.on('message', (msg, rinfo) => {
+			try
 			{
-				case e instanceof DnsFormatError:
-					errorCode = RCODE_FORMAT_ERROR
-					break
-
-				default:
-					errorCode = RCODE_NO_ERROR
+				this.handle(msg, rinfo)
+			} catch (e)
+			{
+				console.log(`${e.name}: ${e.message}`)
 			}
-			udp4Socket.send(e.packet.error(errorCode).write(), rinfo.port, rinfo.address)
-		}
-
-		return
+		})
+		this.udp4Socket.bind(53, config.dns.address, () => {
+			console.log('Listening on port 53 for the DNS service')
+			privilegeManager.drop()
+		})
 	}
-	
-	let response = request.response()
-	let domainAvailable = false
 
-	request.questions.forEach((q) => {
-		let recordData = data.records.find((e) => (e.domain == q.qName))
-
-		if (recordData)
-		{
-			domainAvailable = true
-
-			let record = DnsResourceRecord.empty()
-			record.rName = q.qName
-
-			if (q.qType == TYPE_A && recordData.a)
-			{
-				record.rType = TYPE_A
-				record.rData = recordData.a
-				response.records.push(record)
-			}
-			else if (q.qType == TYPE_AAAA && recordData.aaaa)
-			{
-				record.rType = TYPE_AAAA
-				record.rData = recordData.aaaa
-				response.records.push(record)
-			}
-		}
-	})
-
-	if (!domainAvailable)
-		response.responseCode = 3
-
-	console.log(`Request from [${rinfo.address}]:${rinfo.port}:`)
-	//console.log(request.questions)
-
-	console.log('Response:')
-	//console.log(response.records)
-
-	udp4Socket.send(response.write(), rinfo.port, rinfo.address)
-}
-
-let toBePrivileged = 3
-
-// Determines if all initialization processes are finished and eventually drops root privileges
-function dropPrivileges()
-{
-	toBePrivileged--
-
-	if (toBePrivileged === 0)
+	handle(msg, rinfo)
 	{
-		process.setgid(config.system.group)
-		process.setuid(config.system.user)
+		if (!this.requestRateLimiter.checkIP(rinfo.address))
+			throw new RequestRateExceededError(`Too many DNS request from address ${rinfo.address}`)
 
-		console.log(`Dropped root privileges and switched to ${config.system.user}:${config.system.group}`)
+		let request
+
+		try
+		{
+			request = DnsMessage.read(msg)
+		} catch (e)
+		{
+			console.log(`sending error response for: ${e.name}: ${e.message}`)
+			if (e.packet)
+			{
+				let errorCode
+
+				switch (true)
+				{
+					case e instanceof DnsFormatError:
+						errorCode = RCODE_FORMAT_ERROR
+						break
+
+					default:
+						errorCode = RCODE_NO_ERROR
+				}
+				this.udp4Socket.send(e.packet.error(errorCode).write(), rinfo.port, rinfo.address)
+			}
+
+			return
+		}
+		
+		let response = request.response()
+		let domainAvailable = false
+
+		request.questions.forEach((q) => {
+			let recordData = data.records.find((e) => (e.domain == q.qName))
+
+			if (recordData)
+			{
+				domainAvailable = true
+
+				let record = DnsResourceRecord.empty()
+				record.rName = q.qName
+
+				if (q.qType == TYPE_A && recordData.a)
+				{
+					record.rType = TYPE_A
+					record.rData = recordData.a
+					response.records.push(record)
+				}
+				else if (q.qType == TYPE_AAAA && recordData.aaaa)
+				{
+					record.rType = TYPE_AAAA
+					record.rData = recordData.aaaa
+					response.records.push(record)
+				}
+			}
+		})
+
+		if (!domainAvailable)
+			response.responseCode = 3
+
+		console.log(`Request from [${rinfo.address}]:${rinfo.port}:`)
+		//console.log(request.questions)
+
+		console.log('Response:')
+		//console.log(response.records)
+
+		this.udp4Socket.send(response.write(), rinfo.port, rinfo.address)
 	}
 }
 
-function setupUdp()
+class HttpsUpdater
 {
-	udp4Socket = dgram.createSocket('udp4')
-	udp4Socket.on('message', (msg, rinfo) => {
-		handleDnsRequest(msg, rinfo)
-	})
-	udp4Socket.bind(53, config.dns.address, () => {
-		console.log('Listening on port 53 for the DNS service')
-		dropPrivileges()
-	})
-}
-
-function setupHttps()
-{
-	if (config.https)
+	constructor(updateRequestHandler, privilegeManager)
 	{
-		if (!config.https.key_path || !config.https.cert_path || !config.https.port)
-			throw new OptionFileFormatError("Options key_path, cert_path and port have to be set for the http service");
+		if (config.https)
+		{
+			if (!config.https.key_path || !config.https.cert_path || !config.https.port)
+				throw new OptionFileFormatError("Options key_path, cert_path and port have to be set for the http service");
 
-		const httpsOptions = {
-			key: '',
-			cert: ''
-		}
+			const httpsOptions = {
+				key: '',
+				cert: ''
+			}
 
-		fs.promises.readFile(config.https.key_path).then((key) => {
-			httpsOptions.key = key
-		}).then(() => {
-			fs.promises.readFile(config.https.cert_path).then((cert) => {
-				httpsOptions.cert = cert
+			fs.promises.readFile(config.https.key_path).then((key) => {
+				httpsOptions.key = key
 			}).then(() => {
-				console.log(`Using key ${config.https.key_path} and certificate ${config.https.cert_path}`)
+				fs.promises.readFile(config.https.cert_path).then((cert) => {
+					httpsOptions.cert = cert
+				}).then(() => {
+					console.log(`Using key ${config.https.key_path} and certificate ${config.https.cert_path} for HTTPS`)
 
-				httpsServer = https.createServer(httpsOptions, (req, res) => {
-					handleUpdateRequest(req, res)
-				})
-				httpsServer.listen(config.https.port, () => {
-					console.log(`Listening on port ${config.https.port} for ip updates via HTTPS`)
-					dropPrivileges()
-				})
+					this.httpsServer = https.createServer(httpsOptions, (req, res) => {
+						updateRequestHandler.handle(req, res)
+					})
+					this.httpsServer.listen(config.https.port, () => {
+						console.log(`Listening on port ${config.https.port} for ip updates via HTTPS`)
+						privilegeManager.drop()
+					})
+				}).catch((err) => console.log(err))
 			}).catch((err) => console.log(err))
-		}).catch((err) => console.log(err))
-	}
-	else
-	{
-		dropPrivileges()
-	}
-}
-
-function setupHttp()
-{
-	if (config.http)
-	{
-		if (!config.http.port)
-			throw new OptionFileFormatError("Option port has to be set for the http service");
-
-		httpServer = http.createServer((req, res) => {
-			handleUpdateRequest(req, res)
-		})
-		httpServer.listen(config.http.port, () => {
-			console.log(`Listening on port ${config.http.port} for ip updates via HTTP`)
-			dropPrivileges()
-		})
-	}
-	else
-	{
-		dropPrivileges()
+		}
+		else
+		{
+			privilegeManager.drop()
+		}
 	}
 }
 
-// Setup method called after the existence of necessary files is checked
-function setup()
+class HttpUpdater
 {
-	setupUdp()
-	setupHttps()
-	setupHttp()	
+	constructor(updateRequestHandler, privilegeManager)
+	{
+		if (config.http)
+		{
+			if (!config.http.port)
+				throw new OptionFileFormatError("Option port has to be set for the http service");
+
+			this.httpServer = http.createServer((req, res) => {
+				updateRequestHandler.handle(req, res)
+			})
+			this.httpServer.listen(config.http.port, () => {
+				console.log(`Listening on port ${config.http.port} for ip updates via HTTP`)
+				privilegeManager.drop()
+			})
+		}
+		else
+		{
+			privilegeManager.drop()
+		}
+	}
+}
+
+class PrivilegeManager
+{
+	constructor()
+	{
+		this.toBePrivileged = 3
+	}
+
+	drop()
+	{
+		this.toBePrivileged--
+
+		if (this.toBePrivileged === 0)
+		{
+			process.setgid(config.system.group)
+			process.setuid(config.system.user)
+	
+			console.log(`Dropped root privileges and switched to ${config.system.user}:${config.system.group}`)
+		}
+	}
 }
 
 fs.access('./storage.json', (err) => {
@@ -693,5 +746,10 @@ fs.access('./storage.json', (err) => {
 	else
 		data = require('./storage.json')
 
-	setup()
+	const privilegeManager = new PrivilegeManager()
+	const updateRequestHandler = new UpdateRequestHandler()
+	const requestRateLimiter = new RequestRateLimiter(10, 1)
+	new DnsRequestHandler(requestRateLimiter, privilegeManager)
+	new HttpUpdater(updateRequestHandler, privilegeManager)
+	new HttpsUpdater(updateRequestHandler, privilegeManager)
 })

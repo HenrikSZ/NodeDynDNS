@@ -10,6 +10,8 @@
   "license": "Apache-2.0",
   "dependencies": {
     "basic-auth": "^2.0.1",
+    "bcrypt": "^5.0.0",
+    "hashmap": "^2.4.0",
     "http": "0.0.1-security",
     "is-ip": "^3.1.0"
   }

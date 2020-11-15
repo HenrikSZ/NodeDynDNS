@@ -109,7 +109,7 @@ class UpdateRequestHandler
 
 	handleIP(req, domain)
 	{
-		let ip = getIP(req)
+		let ip = this.getIP(req)
 
 		let elem = data.records.find((element) => (element.domain == domain))
 		if (!elem)

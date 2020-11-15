@@ -101,7 +101,7 @@ class UpdateRequestHandler
 	
 		let elem = config.domains.find((e) => (e.domain == credentials.name))
 	
-		if (!elem || bcrypt.compareSync(credentials.pass, elem.password))
+		if (!elem || !bcrypt.compareSync(credentials.pass, elem.password))
 			throw new AuthenticationError("Bad credentials supplied")
 	
 		return elem.domain

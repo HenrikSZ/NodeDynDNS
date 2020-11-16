@@ -15,7 +15,7 @@ const config = require('./conf.json')
 const logger = winston.createLogger({
 	level: 'info',
 	format: winston.format.json(),
-	transports: [ 
+	transports: [
 		new winston.transports.File({ filename: 'dns.log'}),
 		new winston.transports.Console({ level: 'error' })
 	]
@@ -26,7 +26,7 @@ let data
 // Saves the current data (records, ips) to a json file
 function saveData() {
 	fs.writeFileSync('./storage.json', JSON.stringify(data))
-	logger.info('saved resource record data')
+	logger.info('[SYS] saved resource record data')
 }
 
 // Correct signal handling
@@ -73,7 +73,7 @@ class UpdateRequestHandler {
 	
 			res.writeHead(200)
 			res.end(`IP set to ${result}`)
-			logger.info(`updated mapping: [${domain}] => [${result}]`)
+			logger.info(`[${req.connection.remoteAddress}] updated mapping: [${domain}] => [${result}]`)
 		} catch (e) {
 			switch (true) {
 				case e instanceof FormatError:
@@ -97,14 +97,14 @@ class UpdateRequestHandler {
 	getTargetDomain(req) {
 		let credentials = auth(req)
 		if (!credentials || !credentials.name || !credentials.pass) {
-			logger.warn(`[${req.connection.remoteAddress}]: no credentials]`)
+			logger.warn(`[${req.connection.remoteAddress}] no credentials]`)
 			throw new AuthenticationError("No credentials supplied")
 		}
 
 		let elem = config.domains.find((e) => (e.domain == credentials.name))
 	
 		if (!elem || !bcrypt.compareSync(credentials.pass, elem.password)) {
-			logger.warn(`[${req.connection.remoteAddress}]: bad credentials`)
+			logger.warn(`[${req.connection.remoteAddress}] bad credentials`)
 			throw new AuthenticationError("Bad credentials supplied")
 		}
 	
@@ -125,7 +125,7 @@ class UpdateRequestHandler {
 		} else if (isIp.v6(ip)) {
 			elem.aaaa = ip
 		} else {
-			logger.info(`[${req.connection.remoteAddress}]: invalid IP address format`)
+			logger.info(`[${req.connection.remoteAddress}] invalid IP address format`)
 			throw new FormatError('Invalid IP address format')
 		}
 			
@@ -540,18 +540,18 @@ class DnsRequestHandler {
 				this.handle(msg, rinfo)
 			} catch (e) {
 				if (!e instanceof RequestRateExceededError)
-					logger.error(`${e.name}: ${e.message}`)
+					logger.error(`[DNS] ${e.name}: ${e.message}`)
 			}
 		})
 		this.udp4Socket.bind(53, config.dns.address, () => {
-			logger.info('[DNS]: port: 53')
+			logger.info('[DNS] port: 53')
 			privilegeManager.drop()
 		})
 	}
 
 	handle(msg, rinfo) {
 		if (!this.requestRateLimiter.checkIP(rinfo.address)) {
-			logger.warn(`[${rinfo.address}]: throttling: too many DNS requests`)
+			logger.warn(`[${rinfo.address}] throttling: too many DNS requests`)
 			throw new RequestRateExceededError(`Too many DNS request from address ${rinfo.address}`)
 		}
 
@@ -565,12 +565,12 @@ class DnsRequestHandler {
 
 				switch (true) {
 					case e instanceof DnsFormatError:
-						logger.warn(`[${rinfo.address}]: DNS format error`)
+						logger.warn(`[${rinfo.address}] DNS format error`)
 						errorCode = RCODE_FORMAT_ERROR
 						break
 
 					default:
-						logger.warn(`[${rinfo.address}]: DNS error`)
+						logger.warn(`[${rinfo.address}] DNS error`)
 						errorCode = RCODE_NO_ERROR
 				}
 				this.udp4Socket.send(e.packet.error(errorCode).write(), rinfo.port, rinfo.address)
@@ -606,7 +606,7 @@ class DnsRequestHandler {
 		if (!domainAvailable)
 			response.responseCode = 3
 
-		logger.verbose(`Request from [${rinfo.address}]:${rinfo.port}:`)
+		logger.verbose(`[DNS] request from [${rinfo.address}]${rinfo.port}:`)
 		logger.debug(request.questions)
 
 		logger.debug(response.records)
@@ -619,7 +619,7 @@ class HttpsUpdater {
 	constructor(updateRequestHandler, privilegeManager) {
 		if (config.https) {
 			if (!config.https.key_path || !config.https.cert_path || !config.https.port) {
-				logger.error('options key_path, cert_path, port not set for https service')
+				logger.error('[SYS] options key_path, cert_path, port not set for https service')
 				throw new OptionFileFormatError("Options key_path, cert_path and port have to be set for the https service");
 			}
 
@@ -634,13 +634,14 @@ class HttpsUpdater {
 				fs.promises.readFile(config.https.cert_path).then((cert) => {
 					httpsOptions.cert = cert
 				}).then(() => {
-					logger.info(`[HTTPS]: key: ${config.https.key_path} | certificate: ${config.https.cert_path}`)
+					logger.info(`[HTTPS] key: ${config.https.key_path}`)
+					logger.info(`[HTTPS] certificate: ${config.https.cert_path}`)
 
 					this.httpsServer = https.createServer(httpsOptions, (req, res) => {
 						updateRequestHandler.handle(req, res)
 					})
 					this.httpsServer.listen(config.https.port, () => {
-						logger.info(`[HTTPS]: port: ${config.https.port}`)
+						logger.info(`[HTTPS] port: ${config.https.port}`)
 						privilegeManager.drop()
 					})
 				}).catch((err) => logger.error(err))
@@ -655,7 +656,7 @@ class HttpUpdater {
 	constructor(updateRequestHandler, privilegeManager) {
 		if (config.http) {
 			if (!config.http.port) {
-				logger.error('[HTTP]: port not set')
+				logger.error('[HTTP] port not set')
 				throw new OptionFileFormatError("Option port has to be set for the http service");
 			}
 
@@ -663,7 +664,7 @@ class HttpUpdater {
 				updateRequestHandler.handle(req, res)
 			})
 			this.httpServer.listen(config.http.port, () => {
-				logger.info(`[HTTP]: port: ${config.http.port}`)
+				logger.info(`[HTTP] port: ${config.http.port}`)
 				privilegeManager.drop()
 			})
 		}
@@ -685,7 +686,7 @@ class PrivilegeManager {
 			process.setgid(config.system.group)
 			process.setuid(config.system.user)
 	
-			logger.info(`switched to ${config.system.user}:${config.system.group}`)
+			logger.info(`[SYS] switched to ${config.system.user}:${config.system.group}`)
 		}
 	}
 }

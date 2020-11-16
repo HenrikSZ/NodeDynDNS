@@ -9,16 +9,24 @@ const isIp = require('is-ip')
 const dgram = require('dgram')
 const bcrypt = require('bcrypt')
 const HashMap = require('hashmap')
+const winston = require('winston')
 
 const config = require('./conf.json')
+const logger = winston.createLogger({
+	level: 'info',
+	format: winston.format.json(),
+	transports: [ 
+		new winston.transports.File({ filename: 'dns.log'}),
+		new winston.transports.Console({ level: 'error' })
+	]
+})
 
 let data
 
 // Saves the current data (records, ips) to a json file
-function saveData()
-{
+function saveData() {
 	fs.writeFileSync('./storage.json', JSON.stringify(data))
-	console.log('Saved resource record data')
+	logger.info('saved resource record data')
 }
 
 // Correct signal handling
@@ -26,18 +34,15 @@ process.on('SIGINT', () => process.exit())
 process.on('SIGTERM', () => process.exit())
 process.on('exit', () => saveData())
 
-class RequestRateLimiter
-{
-	constructor(numRequests, minutes)
-	{
+class RequestRateLimiter {
+	constructor(numRequests, minutes) {
 		this.numRequests = numRequests
 		this.minutes = minutes
 		this.ipMap = new HashMap()
 		this.lastRotation = Date.now() / 60000
 	}
 
-	checkIP(ip)
-	{
+	checkIP(ip) {
 		let count = this.ipMap.get(ip)
 
 		if (Date.now() / 60000 > this.lastRotation)
@@ -60,19 +65,16 @@ class RequestRateLimiter
 	}
 }
 
-class UpdateRequestHandler
-{
-	handle(req, res)
-	{
+class UpdateRequestHandler {
+	handle(req, res) {
 		try {
 			const domain = this.getTargetDomain(req)
 			const result = this.handleIP(req, domain)
 	
 			res.writeHead(200)
-			res.end(`IP will be set to ${result}`)
-			console.log(`Updated IP address to ${result}`)
-		} catch (e)
-		{
+			res.end(`IP set to ${result}`)
+			logger.info(`updated mapping: [${domain}] => [${result}]`)
+		} catch (e) {
 			switch (true) {
 				case e instanceof FormatError:
 					res.writeHead(422)
@@ -89,47 +91,49 @@ class UpdateRequestHandler
 			} 
 			
 			res.end(`Error: ${e.message}`)
-			console.log(`${e.name}: ${e.message}`)
 		}
 	}
 
-	getTargetDomain(req)
-	{
+	getTargetDomain(req) {
 		let credentials = auth(req)
-		if (!credentials || !credentials.name || !credentials.pass)
+		if (!credentials || !credentials.name || !credentials.pass) {
+			logger.warn(`[${req.connection.remoteAddress}]: no credentials]`)
 			throw new AuthenticationError("No credentials supplied")
-	
+		}
+
 		let elem = config.domains.find((e) => (e.domain == credentials.name))
 	
-		if (!elem || !bcrypt.compareSync(credentials.pass, elem.password))
+		if (!elem || !bcrypt.compareSync(credentials.pass, elem.password)) {
+			logger.warn(`[${req.connection.remoteAddress}]: bad credentials`)
 			throw new AuthenticationError("Bad credentials supplied")
+		}
 	
 		return elem.domain
 	}
 
-	handleIP(req, domain)
-	{
+	handleIP(req, domain) {
 		let ip = this.getIP(req)
 
 		let elem = data.records.find((element) => (element.domain == domain))
-		if (!elem)
-		{
+		if (!elem) {
 			elem = { domain: domain }
 			data.records.push(elem)
 		}
 		
-		if (isIp.v4(ip))
+		if (isIp.v4(ip)) {
 			elem.a = ip
-		else if (isIp.v6(ip))
+		} else if (isIp.v6(ip)) {
 			elem.aaaa = ip
-		else
-			throw new FormatError('Invalid IP format')
+		} else {
+			logger.info(`[${req.connection.remoteAddress}]: invalid IP address format`)
+			throw new FormatError('Invalid IP address format')
+		}
+			
 
 		return ip;
 	}
 
-	getIP(req)
-	{
+	getIP(req) {
 		let queryObject = url.parse(req.url, true).query
 		let ipString = ''
 
@@ -201,33 +205,26 @@ const TYPE_ALL   = 255  // A request for all records (only valid in question)
 
 
 // Wrapper object to make passing around buffer offsets easier
-class Offset
-{
-	constructor()
-	{
+class Offset {
+	constructor() {
 		this.value = 0
 	}
 }
 
 // Class with static methods to read and write domains in the format specified by RFC 1035
-class OctetGroup
-{
-	static read(buffer, offset)
-	{
+class OctetGroup {
+	static read(buffer, offset) {
 		let result = ''
 		let groupLength = 0
 		let usedPointer = false
 		
-		do
-		{
+		do {
 			groupLength = buffer.readUInt8(offset.value)
 			offset.value++
 			
-			if (groupLength > 0)
-			{
+			if (groupLength > 0) {
 				if (((groupLength & 0b10000000) >> 7) == 1
-					&& ((groupLength & 0b01000000) >> 6) == 1)
-				{
+					&& ((groupLength & 0b01000000) >> 6) == 1) {
 					// Message pointer
 
 					if (usedPointer)
@@ -249,8 +246,7 @@ class OctetGroup
 		return result
 	}
 
-	static write(buffer, offset, string)
-	{
+	static write(buffer, offset, string) {
 		let octetGroups = string.split('.')
 
 		octetGroups.forEach((group) => {
@@ -262,10 +258,8 @@ class OctetGroup
 
 
 // Class to read and write DNS questions
-class DnsQuestion
-{
-	static read(buffer, offset)
-	{
+class DnsQuestion {
+	static read(buffer, offset) {
 		let question = new DnsQuestion()
 
 		question.qName = OctetGroup.read(buffer, offset)
@@ -277,13 +271,11 @@ class DnsQuestion
 		return question
 	}
 
-	static empty()
-	{
+	static empty() {
 		return new DnsQuestion()
 	}
 
-	size()
-	{
+	size() {
 		let size = 0
 		if (this.qName)
 			size += this.qName.length
@@ -293,8 +285,7 @@ class DnsQuestion
 		return size
 	}
 
-	write(buffer, offset)
-	{
+	write(buffer, offset) {
 		OctetGroup.write(buffer, offset, this.qName)
 
 		offset.value = buffer.writeInt16BE(this.qType, offset.value)
@@ -303,10 +294,8 @@ class DnsQuestion
 }
 
 // Class to read and write DNS RRs
-class DnsResourceRecord
-{
-	static empty()
-	{
+class DnsResourceRecord {
+	static empty() {
 		let record = new DnsResourceRecord()
 
 		record.rName = ''
@@ -318,8 +307,7 @@ class DnsResourceRecord
 		return record
 	}
 
-	static read()
-	{
+	static read() {
 		let record = new DnsResourceRecord()
 
 		record.rName = OctetGroup.read(buffer, offset)
@@ -336,13 +324,11 @@ class DnsResourceRecord
 		return record
 	}
 
-	size()
-	{
+	size() {
 		let size = 0
 		if (this.rName)
 			size += this.rName.length
-		switch (this.rType)
-		{
+		switch (this.rType) {
 			case TYPE_A:
 				size += 4
 				break
@@ -356,10 +342,8 @@ class DnsResourceRecord
 		return size
 	}
 
-	writeData(buffer, offset)
-	{
-		switch (this.rType)
-		{
+	writeData(buffer, offset) {
+		switch (this.rType) {
 			case TYPE_A:
 				offset.value = buffer.writeUInt16BE(4, offset.value)
 				
@@ -373,8 +357,7 @@ class DnsResourceRecord
 				offset.value = buffer.writeUInt16BE(16, offset.value)
 				
 				let chunks = this.rData.split(':')
-				for (let c of chunks)
-				{
+				for (let c of chunks) {
 					if (c ==  '')
 						for (let i = 0; i < 8 + 1 - chunks.length; i++)
 							offset.value = buffer.writeUInt16BE(0, offset.value)
@@ -385,8 +368,7 @@ class DnsResourceRecord
 		}
 	}
 
-	write(buffer, offset)
-	{
+	write(buffer, offset) {
 		OctetGroup.write(buffer, offset, this.rName)
 		offset.value = buffer.writeUInt16BE(this.rType, offset.value)
 		offset.value = buffer.writeUInt16BE(this.rClass, offset.value)
@@ -394,17 +376,14 @@ class DnsResourceRecord
 		this.writeData(buffer, offset)
 	}
 
-	readData(buffer, offset)
-	{
+	readData(buffer, offset) {
 		let rDataLength = buffer.readUInt16BE(offset.value)
 		offset.value += 2
 	
-		switch (this.rType)
-		{
+		switch (this.rType) {
 			case TYPE_A:
 				this.rData = ''
-				for (let i = 0; i < 4; i++)
-				{
+				for (let i = 0; i < 4; i++) {
 					let block = buffer.readUInt8(offset.value)
 					this.rData += block.toString()
 	
@@ -415,8 +394,7 @@ class DnsResourceRecord
 			case TYPE_AAAA:
 				this.rData = ''
 	
-				for (let i = 0; i < 8; i++)
-				{
+				for (let i = 0; i < 8; i++) {
 					let block = buffer.readUInt16BE(offset.value)
 					this.rData += block.toString(16)	
 	
@@ -432,10 +410,8 @@ class DnsResourceRecord
 }
 
 // Class to read and write whole DNS message
-class DnsMessage
-{
-	static empty()
-	{
+class DnsMessage {
+	static empty() {
 		let packet = new DnsMessage()
 
 		packet.isResponse = false
@@ -452,15 +428,13 @@ class DnsMessage
 		return packet
 	}
 
-	static read(buffer)
-	{
+	static read(buffer) {
 		let packet = DnsMessage.empty()
 
 		if (buffer.length < 12)
 			throw new DnsFormatError('DNS Request too short')
 
-		try
-		{
+		try {
 			packet.id = buffer.readUInt16BE(0)
 			packet.readFlags(buffer.readUInt16BE(2))
 
@@ -486,8 +460,7 @@ class DnsMessage
 		return packet
 	}
 
-	readFlags(flags)
-	{
+	readFlags(flags) {
 		this.isResponse = 		!!((flags & 0b1000000000000000) >> 15)
 		this.opCode = 			(flags & 0b0111100000000000) >> 11
 		this.isAuthority = 		!!((flags & 0b0000010000000000) >> 10)
@@ -497,8 +470,7 @@ class DnsMessage
 		this.responseCode =		(flags & 0b0000000000001111) >> 0
 	}
 
-	getFlags()
-	{
+	getFlags() {
 		let flags = 0
 
 		flags |= (this.isResponse ? 0b1 : 0b0) << 15
@@ -512,8 +484,7 @@ class DnsMessage
 		return flags
 	}
 
-	write()
-	{
+	write() {
 		let size = 0
 
 		this.questions.forEach((q) => size += q.size())
@@ -537,8 +508,7 @@ class DnsMessage
 		return buffer
 	}
 
-	response()
-	{
+	response() {
 		let response = DnsMessage.empty()
 
 		response.isResponse = true
@@ -549,8 +519,7 @@ class DnsMessage
 		return response
 	}
 
-	error(errorCode)
-	{
+	error(errorCode) {
 		let response = DnsMessage.empty()
 
 		response.isReponse = true
@@ -562,51 +531,46 @@ class DnsMessage
 	}
 }
 
-class DnsRequestHandler
-{
-	constructor(requestRateLimiter, privilegeManager)
-	{
+class DnsRequestHandler {
+	constructor(requestRateLimiter, privilegeManager) {
 		this.requestRateLimiter = requestRateLimiter
 		this.udp4Socket = dgram.createSocket('udp4')
 		this.udp4Socket.on('message', (msg, rinfo) => {
-			try
-			{
+			try {
 				this.handle(msg, rinfo)
-			} catch (e)
-			{
-				console.log(`${e.name}: ${e.message}`)
+			} catch (e) {
+				if (!e instanceof RequestRateExceededError)
+					logger.error(`${e.name}: ${e.message}`)
 			}
 		})
 		this.udp4Socket.bind(53, config.dns.address, () => {
-			console.log('Listening on port 53 for the DNS service')
+			logger.info('[DNS]: port: 53')
 			privilegeManager.drop()
 		})
 	}
 
-	handle(msg, rinfo)
-	{
-		if (!this.requestRateLimiter.checkIP(rinfo.address))
+	handle(msg, rinfo) {
+		if (!this.requestRateLimiter.checkIP(rinfo.address)) {
+			logger.warn(`[${rinfo.address}]: throttling: too many DNS requests`)
 			throw new RequestRateExceededError(`Too many DNS request from address ${rinfo.address}`)
+		}
 
 		let request
 
-		try
-		{
+		try {
 			request = DnsMessage.read(msg)
-		} catch (e)
-		{
-			console.log(`sending error response for: ${e.name}: ${e.message}`)
-			if (e.packet)
-			{
+		} catch (e) {
+			if (e.packet) {
 				let errorCode
 
-				switch (true)
-				{
+				switch (true) {
 					case e instanceof DnsFormatError:
+						logger.warn(`[${rinfo.address}]: DNS format error`)
 						errorCode = RCODE_FORMAT_ERROR
 						break
 
 					default:
+						logger.warn(`[${rinfo.address}]: DNS error`)
 						errorCode = RCODE_NO_ERROR
 				}
 				this.udp4Socket.send(e.packet.error(errorCode).write(), rinfo.port, rinfo.address)
@@ -621,21 +585,17 @@ class DnsRequestHandler
 		request.questions.forEach((q) => {
 			let recordData = data.records.find((e) => (e.domain == q.qName))
 
-			if (recordData)
-			{
+			if (recordData) {
 				domainAvailable = true
 
 				let record = DnsResourceRecord.empty()
 				record.rName = q.qName
 
-				if (q.qType == TYPE_A && recordData.a)
-				{
+				if (q.qType == TYPE_A && recordData.a) {
 					record.rType = TYPE_A
 					record.rData = recordData.a
 					response.records.push(record)
-				}
-				else if (q.qType == TYPE_AAAA && recordData.aaaa)
-				{
+				} else if (q.qType == TYPE_AAAA && recordData.aaaa) {
 					record.rType = TYPE_AAAA
 					record.rData = recordData.aaaa
 					response.records.push(record)
@@ -646,24 +606,22 @@ class DnsRequestHandler
 		if (!domainAvailable)
 			response.responseCode = 3
 
-		console.log(`Request from [${rinfo.address}]:${rinfo.port}:`)
-		//console.log(request.questions)
+		logger.verbose(`Request from [${rinfo.address}]:${rinfo.port}:`)
+		logger.debug(request.questions)
 
-		console.log('Response:')
-		//console.log(response.records)
+		logger.debug(response.records)
 
 		this.udp4Socket.send(response.write(), rinfo.port, rinfo.address)
 	}
 }
 
-class HttpsUpdater
-{
-	constructor(updateRequestHandler, privilegeManager)
-	{
-		if (config.https)
-		{
-			if (!config.https.key_path || !config.https.cert_path || !config.https.port)
-				throw new OptionFileFormatError("Options key_path, cert_path and port have to be set for the http service");
+class HttpsUpdater {
+	constructor(updateRequestHandler, privilegeManager) {
+		if (config.https) {
+			if (!config.https.key_path || !config.https.cert_path || !config.https.port) {
+				logger.error('options key_path, cert_path, port not set for https service')
+				throw new OptionFileFormatError("Options key_path, cert_path and port have to be set for the https service");
+			}
 
 			const httpsOptions = {
 				key: '',
@@ -676,66 +634,58 @@ class HttpsUpdater
 				fs.promises.readFile(config.https.cert_path).then((cert) => {
 					httpsOptions.cert = cert
 				}).then(() => {
-					console.log(`Using key ${config.https.key_path} and certificate ${config.https.cert_path} for HTTPS`)
+					logger.info(`[HTTPS]: key: ${config.https.key_path} | certificate: ${config.https.cert_path}`)
 
 					this.httpsServer = https.createServer(httpsOptions, (req, res) => {
 						updateRequestHandler.handle(req, res)
 					})
 					this.httpsServer.listen(config.https.port, () => {
-						console.log(`Listening on port ${config.https.port} for ip updates via HTTPS`)
+						logger.info(`[HTTPS]: port: ${config.https.port}`)
 						privilegeManager.drop()
 					})
-				}).catch((err) => console.log(err))
-			}).catch((err) => console.log(err))
-		}
-		else
-		{
+				}).catch((err) => logger.error(err))
+			}).catch((err) => logger.error(err))
+		} else {
 			privilegeManager.drop()
 		}
 	}
 }
 
-class HttpUpdater
-{
-	constructor(updateRequestHandler, privilegeManager)
-	{
-		if (config.http)
-		{
-			if (!config.http.port)
+class HttpUpdater {
+	constructor(updateRequestHandler, privilegeManager) {
+		if (config.http) {
+			if (!config.http.port) {
+				logger.error('[HTTP]: port not set')
 				throw new OptionFileFormatError("Option port has to be set for the http service");
+			}
 
 			this.httpServer = http.createServer((req, res) => {
 				updateRequestHandler.handle(req, res)
 			})
 			this.httpServer.listen(config.http.port, () => {
-				console.log(`Listening on port ${config.http.port} for ip updates via HTTP`)
+				logger.info(`[HTTP]: port: ${config.http.port}`)
 				privilegeManager.drop()
 			})
 		}
-		else
-		{
+		else {
 			privilegeManager.drop()
 		}
 	}
 }
 
-class PrivilegeManager
-{
-	constructor()
-	{
+class PrivilegeManager {
+	constructor() {
 		this.toBePrivileged = 3
 	}
 
-	drop()
-	{
+	drop() {
 		this.toBePrivileged--
 
-		if (this.toBePrivileged === 0)
-		{
+		if (this.toBePrivileged === 0) {
 			process.setgid(config.system.group)
 			process.setuid(config.system.user)
 	
-			console.log(`Dropped root privileges and switched to ${config.system.user}:${config.system.group}`)
+			logger.info(`switched to ${config.system.user}:${config.system.group}`)
 		}
 	}
 }

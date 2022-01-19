@@ -5,7 +5,8 @@
   "description": "A small server providing solid dyndns service",
   "main": "dns.js",
   "scripts": {
-    "test": "./dns.js"
+    "test": "node dns.js",
+    "hash": "node hash.js"
   },
   "dependencies": {
     "basic-auth": "^2.0.1",

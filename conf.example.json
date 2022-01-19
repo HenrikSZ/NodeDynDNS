@@ -1,0 +1,23 @@
+{
+  "domains": [
+    {
+      "domain": "home.whatever.com.",
+      "password": "pass"
+    }
+  ],
+  "dns": {
+    "address": "localhost"
+  },
+  "system": {
+    "user": "www-data",
+    "group": "www-data"
+  },
+  "https": {
+    "key_path": "./key.pem",
+    "cert_path": "./cert.pem",
+    "port": "8443"
+  },
+  "http": {
+    "port": "8080"
+  }
+}

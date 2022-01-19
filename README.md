@@ -12,6 +12,32 @@ application of OOP myself. So I started this project
 
 Project Summary
 ---------------
-- Pure JavaScript on node.js
+- JavaScript on node.js
 - RFC 1035 compliant
-- Website to update 
+- API with http basic authentication to update 
+
+
+Setup Instructions
+------------
+- Have node.js installed
+- run: npm install
+- Rename conf.example.json to conf.json and make your settings (pretty self-explanatory)
+- DO NOT enter the password in clear text. Instead call npm run hash. You will see what it does
+
+
+Additional Notes
+----------------
+- Make sure you have the correct records DNS record set, so this DNS server will actually be accessed
+- You can of course add multiple domains
+- App must be run with root privileges to be able to bind to dns port 53/udp
+- The app will drop privileges to user and group defined in the "system" dict
+- If you want no http or https server just remove it from the config file
+- The dot at the end of the of the domain IS REQUIRED
+- The app will save the set records in storage.json
+- DO NOT TOUCH storage.json, except if you want to set a specific init IP
+- EXCEPT maybe to clear dns data, you can delete it
+
+
+Running the app
+---------------
+- node .

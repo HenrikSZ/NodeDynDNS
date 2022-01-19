@@ -628,24 +628,27 @@ class HttpsUpdater {
 				cert: ''
 			}
 
-			fs.promises.readFile(config.https.key_path).then((key) => {
+			fs.promises.readFile(config.https.key_path)
+			.then((key) => {
 				httpsOptions.key = key
-			}).then(() => {
-				fs.promises.readFile(config.https.cert_path).then((cert) => {
-					httpsOptions.cert = cert
-				}).then(() => {
-					logger.info(`https.key[${config.https.key_path}]`)
-					logger.info(`https.certificate[${config.https.cert_path}]`)
+				return fs.promises.readFile(config.https.cert_path)
+			})
+			.then((cert) => {
+				httpsOptions.cert = cert
+				logger.info(`https.key[${config.https.key_path}]`)
+				logger.info(`https.certificate[${config.https.cert_path}]`)
 
-					this.httpsServer = https.createServer(httpsOptions, (req, res) => {
-						updateRequestHandler.handle(req, res)
-					})
-					this.httpsServer.listen(config.https.port, () => {
-						logger.info(`https.port[${config.https.port}]`)
-						privilegeManager.drop()
-					})
-				}).catch((err) => logger.error(err))
-			}).catch((err) => logger.error(err))
+				this.httpsServer = https.createServer(httpsOptions, (req, res) => {
+					updateRequestHandler.handle(req, res)
+				})
+				this.httpsServer.listen(config.https.port, () => {
+					logger.info(`https.port[${config.https.port}]`)
+					privilegeManager.drop()
+				})
+
+				return Promise.resolve()
+			})
+			.catch((err) => logger.error(err))
 		} else {
 			privilegeManager.drop()
 		}

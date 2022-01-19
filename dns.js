@@ -680,11 +680,11 @@ class PrivilegeManager {
 	}
 
 	drop() {
-		this.toBePrivileged--
-
-		if (this.toBePrivileged === 0) {
-			process.setgid(config.system.group)
-			process.setuid(config.system.user)
+		if (--this.toBePrivileged === 0) {
+			if (process.setgid && process.setiud) {
+				process.setgid(config.system.group)
+				process.setuid(config.system.user)
+			}
 	
 			logger.info(`sys.user[${config.system.user}]`)
 			logger.info(`sys.group[${config.system.group}]`)

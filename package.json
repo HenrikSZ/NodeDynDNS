@@ -1,19 +1,18 @@
 {
-  "name": "dyndns",
+  "name": "NodeDynDNS",
+  "author": "Henrik Zimmermann",
   "version": "1.0.0",
   "description": "A small server providing solid dyndns service",
   "main": "dns.js",
   "scripts": {
     "test": "./dns.js"
   },
-  "author": "Henrik Zimmermann",
-  "license": "Apache-2.0",
   "dependencies": {
     "basic-auth": "^2.0.1",
-    "bcrypt": "^5.0.0",
+    "bcrypt": "^5.0.1",
     "hashmap": "^2.4.0",
     "http": "0.0.1-security",
     "is-ip": "^3.1.0",
-    "winston": "^3.3.3"
+    "winston": "^3.4.0"
   }
 }
